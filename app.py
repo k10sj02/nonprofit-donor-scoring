@@ -16,12 +16,25 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    .block-container { padding-top: 2rem; }
+    .block-container {
+        padding-top: 2rem;
+        padding-left: 1rem;
+        padding-right: 1rem;
+    }
     .section-header {
         font-size: 1.1rem;
         font-weight: 600;
         color: #4a4a4a;
         margin-bottom: 0.25rem;
+    }
+    [data-testid="stHorizontalBlock"] {
+        align-items: stretch;
+    }
+    .vega-embed {
+        width: 100% !important;
+    }
+    .vega-embed canvas {
+        width: 100% !important;
     }
     </style>
     """,
@@ -41,7 +54,7 @@ def to_display(df: pd.DataFrame) -> pd.DataFrame:
 # ── Header ────────────────────────────────────────────────────────────────────
 st.title("💚 Donor Propensity Scoring")
 st.caption(
-    "Predict which donors are most likely to give again using historical donation behavior."
+    "Score, segment, and prioritize your donor base for maximum retention impact."
 )
 st.divider()
 
@@ -122,7 +135,7 @@ donor_summary["segment"] = pd.qcut(
     duplicates="drop",
 ).astype(str)
 
-# ── Apply segment filter to a view used by all charts and table ───────────────
+# ── Apply segment filter ───────────────────────────────────────────────────────
 if segment_filter != "All":
     chart_df = donor_summary[donor_summary["segment"] == segment_filter].copy()
 else:
@@ -146,12 +159,58 @@ seg_color_scale = alt.Scale(
     range=["#e74c3c", "#f39c12", "#2ecc71"],
 )
 
+# ── How to use ────────────────────────────────────────────────────────────────
+with st.expander("📖 How to use this tool", expanded=False):
+    st.markdown(
+        """
+    **This dashboard scores your donors by likelihood to give again and segments them into three tiers.**
+    Use the sidebar filter to focus on a specific segment at any time.
+
+    ---
+
+    **🟢 High segment — Priority outreach**
+    Donors with the strongest signals for repeat giving: recent activity, higher frequency, and
+    larger average gifts. Contact these first. Your budget goes furthest here.
+
+    **🟡 Medium segment — Nurture and warm up**
+    Donors with moderate engagement. A lighter touch — newsletters, impact updates, or a soft ask
+    — can move them toward High over time.
+
+    **🔴 Low segment — Re-engagement or deprioritize**
+    Donors with weak retention signals. Consider a re-engagement campaign before a direct ask,
+    or deprioritize to protect outreach budget.
+
+    ---
+
+    **Reading the charts**
+    - **Score Distribution** — scores closer to 1.0 mean higher likelihood to give again.
+      Look for a clear separation between segments.
+    - **Who Comes Back?** — confirms the model is working. High should always be
+      meaningfully above Low. A larger gap means stronger model discrimination.
+    - **Giving Frequency** — shows giving frequency across your base. Most donors typically
+      give once; repeat donors are rare and high value.
+    - **Recency vs Gift Size** — look for clusters. Lapsed donors with high average gifts
+      are strong re-engagement targets regardless of segment.
+    - **Model vs Random** — the further the green line sits above the grey diagonal, the more your
+      model outperforms random selection. A higher lift means you can reach more retained donors
+      by contacting fewer people.
+
+    ---
+
+    **Suggested next steps**
+    1. Export the **High segment** list and pass to your outreach team
+    2. Sort by **Propensity Score** descending to prioritize within the segment
+    3. For **Medium donors** with high total donated, consider a personalized re-engagement ask
+    4. Re-run the model periodically as new donation data comes in to keep scores fresh
+    """
+    )
+
 # ── Charts row 1 ──────────────────────────────────────────────────────────────
 c1, c2 = st.columns(2)
 
 with c1:
     st.markdown(
-        '<p class="section-header">Propensity Score Distribution</p>',
+        '<p class="section-header">Score Distribution</p>',
         unsafe_allow_html=True,
     )
     hist_chart = (
@@ -170,7 +229,7 @@ with c1:
 
 with c2:
     st.markdown(
-        '<p class="section-header">Retention Rate by Segment</p>',
+        '<p class="section-header">Who Comes Back?</p>',
         unsafe_allow_html=True,
     )
     segment_perf = (
@@ -203,7 +262,7 @@ c3, c4 = st.columns(2)
 
 with c3:
     st.markdown(
-        '<p class="section-header">Donations per Donor</p>', unsafe_allow_html=True
+        '<p class="section-header">Giving Frequency</p>', unsafe_allow_html=True
     )
     freq_data = (
         donor_summary["donation_count"]
@@ -226,7 +285,7 @@ with c3:
 
 with c4:
     st.markdown(
-        '<p class="section-header">Avg Donation vs Recency by Segment</p>',
+        '<p class="section-header">Recency vs Gift Size</p>',
         unsafe_allow_html=True,
     )
 
@@ -297,13 +356,98 @@ with c4:
 
 st.divider()
 
+# ── Model Lift Chart ──────────────────────────────────────────────────────────
+st.markdown(
+    '<p class="section-header">Model vs Random: How Much Better?</p>',
+    unsafe_allow_html=True,
+)
+st.caption(
+    "Contacting top-scored donors finds retained donors faster — here's how much faster."
+)
+
+lift_df = donor_summary[["propensity_score", "donated_again"]].copy()
+lift_df = lift_df.sort_values("propensity_score", ascending=False).reset_index(
+    drop=True
+)
+
+total = len(lift_df)
+total_retained = lift_df["donated_again"].sum()
+
+steps = list(range(1, 101))
+model_capture = []
+random_capture = []
+
+for pct in steps:
+    n = max(1, int(total * pct / 100))
+    captured = lift_df["donated_again"].iloc[:n].sum()
+    model_capture.append(captured / total_retained * 100)
+    random_capture.append(pct)
+
+lift_data = pd.DataFrame(
+    {
+        "pct_contacted": steps + steps,
+        "pct_retained_captured": model_capture + random_capture,
+        "type": ["Model"] * 100 + ["Random"] * 100,
+    }
+)
+
+lift_chart = (
+    alt.Chart(lift_data)
+    .mark_line(strokeWidth=2)
+    .encode(
+        x=alt.X("pct_contacted:Q", title="% of Donors Contacted"),
+        y=alt.Y("pct_retained_captured:Q", title="% of Retained Donors Captured"),
+        color=alt.Color(
+            "type:N",
+            scale=alt.Scale(domain=["Model", "Random"], range=["#2ecc71", "#aaaaaa"]),
+            legend=alt.Legend(title="", orient="bottom-right"),
+        ),
+        strokeDash=alt.condition(
+            alt.datum.type == "Random",
+            alt.value([4, 4]),
+            alt.value([0]),
+        ),
+        tooltip=[
+            alt.Tooltip("pct_contacted:Q", title="% Contacted"),
+            alt.Tooltip(
+                "pct_retained_captured:Q", title="% Retained Captured", format=".1f"
+            ),
+            alt.Tooltip("type:N", title="Method"),
+        ],
+    )
+)
+
+top33_model = (
+    lift_df["donated_again"].iloc[: int(total * 0.33)].sum() / total_retained * 100
+)
+top33_random = 33.0
+lift_at_33 = top33_model / top33_random
+
+col_chart, col_stat = st.columns([11, 1])
+with col_chart:
+    st.altair_chart(lift_chart.properties(height=350), use_container_width=True)
+with col_stat:
+    st.metric(
+        "Lift at top 33%",
+        f"{lift_at_33:.1f}x",
+        help="Contacting the top 33% scored donors captures this many times more retained donors than random selection.",
+    )
+    st.metric(
+        "Retained captured (top 33%)",
+        f"{top33_model:.1f}%",
+        help="% of all retained donors found by contacting only the top third.",
+    )
+    st.metric("Random baseline (top 33%)", "33.0%")
+
+st.divider()
+
 # ── Donor table ───────────────────────────────────────────────────────────────
 display_df = chart_df.sort_values("propensity_score", ascending=False).reset_index(
     drop=True
 )
 
 st.markdown(
-    f'<p class="section-header">Top Donors '
+    f'<p class="section-header">Donor Leaderboard '
     f'<span style="font-weight:400;color:#888;">({len(display_df):,} donors · {segment_filter} segment)</span></p>',
     unsafe_allow_html=True,
 )

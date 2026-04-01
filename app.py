@@ -120,9 +120,15 @@ donor_summary["segment"] = pd.qcut(
     q=3,
     labels=["Low", "Medium", "High"],
     duplicates="drop",
-)
+).astype(str)
 
-# ── KPIs ──────────────────────────────────────────────────────────────────────
+# ── Apply segment filter to a view used by all charts and table ───────────────
+if segment_filter != "All":
+    chart_df = donor_summary[donor_summary["segment"] == segment_filter].copy()
+else:
+    chart_df = donor_summary.copy()
+
+# ── KPIs — always based on full dataset ───────────────────────────────────────
 total_donors = len(donor_summary)
 high_pct = (donor_summary["segment"] == "High").mean()
 repeat_rate = (donor_summary["donated_again"] == 1).mean()
@@ -135,6 +141,11 @@ k4.metric("Overall Retention Rate", f"{repeat_rate:.1%}")
 
 st.divider()
 
+seg_color_scale = alt.Scale(
+    domain=["Low", "Medium", "High"],
+    range=["#e74c3c", "#f39c12", "#2ecc71"],
+)
+
 # ── Charts row 1 ──────────────────────────────────────────────────────────────
 c1, c2 = st.columns(2)
 
@@ -144,7 +155,7 @@ with c1:
         unsafe_allow_html=True,
     )
     hist_chart = (
-        alt.Chart(donor_summary[["propensity_score"]])
+        alt.Chart(chart_df[["propensity_score"]])
         .mark_bar(color="#2ecc71", opacity=0.85)
         .encode(
             x=alt.X(
@@ -168,7 +179,6 @@ with c2:
         .reset_index()
         .rename(columns={"donated_again": "retention_rate"})
     )
-    segment_perf["segment"] = segment_perf["segment"].astype(str)
 
     bar_chart = (
         alt.Chart(to_display(segment_perf))
@@ -178,14 +188,7 @@ with c2:
             y=alt.Y(
                 "retention_rate:Q", title="Retention Rate", axis=alt.Axis(format=".0%")
             ),
-            color=alt.Color(
-                "segment:N",
-                scale=alt.Scale(
-                    domain=["Low", "Medium", "High"],
-                    range=["#e74c3c", "#f39c12", "#2ecc71"],
-                ),
-                legend=None,
-            ),
+            color=alt.Color("segment:N", scale=seg_color_scale, legend=None),
             tooltip=[
                 alt.Tooltip("segment:N", title="Segment"),
                 alt.Tooltip("retention_rate:Q", title="Retention Rate", format=".1%"),
@@ -227,18 +230,12 @@ with c4:
         unsafe_allow_html=True,
     )
 
-    scatter_data = donor_summary[["recency_days", "avg_donation", "segment"]].copy()
-    scatter_data["segment"] = scatter_data["segment"].astype(str)
+    scatter_data = chart_df[["recency_days", "avg_donation", "segment"]].copy()
     scatter_data["recency_days"] = scatter_data["recency_days"].astype(int)
     scatter_data["avg_donation"] = scatter_data["avg_donation"].astype(float)
     sampled = scatter_data.sample(
         min(1000, len(scatter_data)), random_state=42
     ).reset_index(drop=True)
-
-    seg_color_scale = alt.Scale(
-        domain=["Low", "Medium", "High"],
-        range=["#e74c3c", "#f39c12", "#2ecc71"],
-    )
 
     dots = (
         alt.Chart(sampled)
@@ -258,7 +255,7 @@ with c4:
     )
 
     seg_reg_rows = []
-    for seg in ["Low", "Medium", "High"]:
+    for seg in sampled["segment"].unique():
         sub = sampled[sampled["segment"] == seg]
         if len(sub) >= 2:
             coef = np.polyfit(sub["recency_days"], sub["avg_donation"], 1)
@@ -301,12 +298,7 @@ with c4:
 st.divider()
 
 # ── Donor table ───────────────────────────────────────────────────────────────
-if segment_filter != "All":
-    filtered_df = donor_summary[donor_summary["segment"] == segment_filter]
-else:
-    filtered_df = donor_summary
-
-display_df = filtered_df.sort_values("propensity_score", ascending=False).reset_index(
+display_df = chart_df.sort_values("propensity_score", ascending=False).reset_index(
     drop=True
 )
 
@@ -342,7 +334,7 @@ st.dataframe(
 st.divider()
 
 # ── Download ──────────────────────────────────────────────────────────────────
-csv = filtered_df.to_csv(index=False).encode("utf-8")
+csv = chart_df.to_csv(index=False).encode("utf-8")
 st.download_button(
     label="⬇️ Download results",
     data=csv,

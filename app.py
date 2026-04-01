@@ -56,7 +56,53 @@ st.title("💚 Donor Propensity Scoring")
 st.caption(
     "Score, segment, and prioritize your donor base for maximum retention impact."
 )
-st.divider()
+# st.divider()
+
+# ── How to use ────────────────────────────────────────────────────────────────
+with st.expander("📖 How to use this tool", expanded=False):
+    st.markdown(
+        """
+    **This dashboard scores your donors by likelihood to give again and segments them into three tiers.**
+    Use the sidebar filter to focus on a specific segment at any time.
+
+    ---
+
+    **🟢 High segment — Priority outreach**
+    Donors with the strongest signals for repeat giving: recent activity, higher frequency, and
+    larger average gifts. Contact these first. Your budget goes furthest here.
+
+    **🟡 Medium segment — Nurture and warm up**
+    Donors with moderate engagement. A lighter touch — newsletters, impact updates, or a soft ask
+    — can move them toward High over time.
+
+    **🔴 Low segment — Re-engagement or deprioritize**
+    Donors with weak retention signals. Consider a re-engagement campaign before a direct ask,
+    or deprioritize to protect outreach budget.
+
+    ---
+
+    **Reading the charts**
+    - **Score Distribution** — scores closer to 1.0 mean higher likelihood to give again.
+      Look for a clear separation between segments.
+    - **Who Comes Back?** — confirms the model is working. High should always be
+      meaningfully above Low. A larger gap means stronger model discrimination.
+    - **Giving Frequency** — shows giving frequency across your base. Most donors typically
+      give once; repeat donors are rare and high value.
+    - **Recency vs Gift Size** — look for clusters. Lapsed donors with high average gifts
+      are strong re-engagement targets regardless of segment.
+    - **Model vs Random** — the further the green line sits above the grey diagonal, the more your
+      model outperforms random selection. A higher lift means you can reach more retained donors
+      by contacting fewer people.
+
+    ---
+
+    **Suggested next steps**
+    1. Export the **High segment** list and pass to your outreach team
+    2. Sort by **Propensity Score** descending to prioritize within the segment
+    3. For **Medium donors** with high total donated, consider a personalized re-engagement ask
+    4. Re-run the model periodically as new donation data comes in to keep scores fresh
+    """
+    )
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -158,52 +204,6 @@ seg_color_scale = alt.Scale(
     domain=["Low", "Medium", "High"],
     range=["#e74c3c", "#f39c12", "#2ecc71"],
 )
-
-# ── How to use ────────────────────────────────────────────────────────────────
-with st.expander("📖 How to use this tool", expanded=False):
-    st.markdown(
-        """
-    **This dashboard scores your donors by likelihood to give again and segments them into three tiers.**
-    Use the sidebar filter to focus on a specific segment at any time.
-
-    ---
-
-    **🟢 High segment — Priority outreach**
-    Donors with the strongest signals for repeat giving: recent activity, higher frequency, and
-    larger average gifts. Contact these first. Your budget goes furthest here.
-
-    **🟡 Medium segment — Nurture and warm up**
-    Donors with moderate engagement. A lighter touch — newsletters, impact updates, or a soft ask
-    — can move them toward High over time.
-
-    **🔴 Low segment — Re-engagement or deprioritize**
-    Donors with weak retention signals. Consider a re-engagement campaign before a direct ask,
-    or deprioritize to protect outreach budget.
-
-    ---
-
-    **Reading the charts**
-    - **Score Distribution** — scores closer to 1.0 mean higher likelihood to give again.
-      Look for a clear separation between segments.
-    - **Who Comes Back?** — confirms the model is working. High should always be
-      meaningfully above Low. A larger gap means stronger model discrimination.
-    - **Giving Frequency** — shows giving frequency across your base. Most donors typically
-      give once; repeat donors are rare and high value.
-    - **Recency vs Gift Size** — look for clusters. Lapsed donors with high average gifts
-      are strong re-engagement targets regardless of segment.
-    - **Model vs Random** — the further the green line sits above the grey diagonal, the more your
-      model outperforms random selection. A higher lift means you can reach more retained donors
-      by contacting fewer people.
-
-    ---
-
-    **Suggested next steps**
-    1. Export the **High segment** list and pass to your outreach team
-    2. Sort by **Propensity Score** descending to prioritize within the segment
-    3. For **Medium donors** with high total donated, consider a personalized re-engagement ask
-    4. Re-run the model periodically as new donation data comes in to keep scores fresh
-    """
-    )
 
 # ── Charts row 1 ──────────────────────────────────────────────────────────────
 c1, c2 = st.columns(2)

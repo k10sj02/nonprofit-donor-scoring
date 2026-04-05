@@ -224,4 +224,5 @@ __pycache__/
 
 # Outputs (but keep sample data)
 outputs/*
-!outputs/donations_clean.csv
+!outputs/donations_clean.csv__pycache__/
+*.pyc

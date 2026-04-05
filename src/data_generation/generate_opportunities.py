@@ -1,3 +1,4 @@
+import uuid
 import pandas as pd
 import numpy as np
 import random
@@ -8,7 +9,7 @@ from datetime import datetime, timedelta
 # -----------------------------
 # HELPERS
 # -----------------------------
-def random_date(start_year=2019, end_year=2027):
+def random_date(start_year=2019, end_year=2025):
     start = datetime(start_year, 1, 1)
     end = datetime(end_year, 12, 31)
     delta = end - start
@@ -16,7 +17,41 @@ def random_date(start_year=2019, end_year=2027):
 
 
 def generate_id(prefix):
-    return f"{prefix}_{random.randint(1000000, 9999999)}"
+    # UUID guarantees uniqueness — no collisions
+    return f"{prefix}_{uuid.uuid4().hex[:10]}"
+
+
+def assign_gift_type(amount):
+    """
+    Classify gift type based on deal amount.
+    Thresholds calibrated to the synthetic deal_amount distribution.
+    """
+    if amount < 5_000:
+        return "Annual Giving"
+    elif amount < 25_000:
+        return "Major Gifts"
+    else:
+        return "Planned Giving"
+
+
+def synthetic_ask_amount(avg_gift: float) -> int:
+    """
+    Generate a realistic pipeline ask amount with enough spread
+    to produce all three gift type tiers.
+    Draws from three tiers directly so distribution is controlled.
+    """
+    tier = random.choices(
+        ["annual", "major", "planned"],
+        weights=[40, 45, 15],
+        k=1,
+    )[0]
+
+    if tier == "annual":
+        return random.randint(1_000, 4_999)
+    elif tier == "major":
+        return random.randint(5_000, 24_999)
+    else:
+        return random.randint(25_000, 500_000)
 
 
 def stage_probability(stage):
@@ -33,19 +68,109 @@ def stage_probability(stage):
     return mapping[stage]
 
 
-def assign_outcome(stage, close_date, late_stages):
-    today = datetime.today()
+# Stage progression order — a gift can only move forward
+STAGE_PROGRESSION = [
+    "Discovery",
+    "Engagement",
+    "Evaluation",
+    "Proposal",
+    "Negotiation",
+    "Committed",
+]
 
-    if close_date > today:
-        return False, False
+TERMINAL_STAGES = ["Committed", "Lost", "Rejected"]
 
-    if stage in ["Lost", "Rejected"]:
+
+def simulate_lifecycle(start_date: datetime) -> list[dict]:
+    """
+    Simulate a gift's journey through pipeline stages.
+
+    Returns a list of stage transition dicts, each representing one row
+    in the opportunity_stages table. The gift either:
+    - Progresses through some stages and closes (Committed)
+    - Stalls and is lost (Lost / Rejected)
+    - Is still open (stops mid-progression, no terminal stage)
+
+    Each transition has a date so the full lifecycle is reconstructable.
+    """
+    transitions = []
+    current_date = start_date
+
+    # Pick a random entry stage (most gifts start at Discovery, some later)
+    entry_idx = random.choices(
+        range(len(STAGE_PROGRESSION)),
+        weights=[40, 25, 15, 10, 7, 3],
+        k=1,
+    )[0]
+
+    current_stage = STAGE_PROGRESSION[entry_idx]
+    previous_stage = None
+
+    while True:
+        transitions.append(
+            {
+                "stage": current_stage,
+                "previous_stage": previous_stage,
+                "stage_entry_date": current_date.strftime("%Y-%m-%d"),
+                "stage_probability_pct": stage_probability(current_stage),
+                "is_current": False,  # will set last one to True below
+            }
+        )
+
+        # Advance date by a realistic number of days per stage
+        days_in_stage = random.randint(14, 120)
+        current_date = current_date + timedelta(days=days_in_stage)
+
+        # Decide what happens next
+        stage_idx = STAGE_PROGRESSION.index(current_stage)
+        is_last_stage = stage_idx == len(STAGE_PROGRESSION) - 1
+
+        if is_last_stage:
+            # Already at Committed — no further transition needed
+            break
+
+        # Roll for progression vs stall vs open
+        roll = random.random()
+
+        if roll < 0.55:
+            # Advance to next stage
+            previous_stage = current_stage
+            current_stage = STAGE_PROGRESSION[stage_idx + 1]
+
+        elif roll < 0.70:
+            # Lost or Rejected
+            terminal = random.choice(["Lost", "Rejected"])
+            transitions.append(
+                {
+                    "stage": terminal,
+                    "previous_stage": current_stage,
+                    "stage_entry_date": current_date.strftime("%Y-%m-%d"),
+                    "stage_probability_pct": 0,
+                    "is_current": False,
+                }
+            )
+            break
+
+        else:
+            # Still open — stop here, no terminal stage
+            break
+
+    # Mark the last transition as the current stage
+    if transitions:
+        transitions[-1]["is_current"] = True
+
+    return transitions
+
+
+def is_closed_won(transitions: list[dict]) -> tuple[bool, bool]:
+    """Derive is_closed and is_successful from the terminal stage."""
+    last_stage = transitions[-1]["stage"]
+    if last_stage == "Committed":
+        return True, True
+    elif last_stage in ["Lost", "Rejected"]:
         return True, False
-
-    if stage in late_stages:
-        return True, random.random() < 0.85
-
-    return True, random.random() < 0.4
+    else:
+        return False, False
 
 
 # -----------------------------
@@ -70,11 +195,6 @@ def generate_opportunities():
             capacity_col = col
             break
 
-    if capacity_col:
-        print(f"📊 Using '{capacity_col}' as capacity column")
-    else:
-        print("⚠️ No capacity column found — generating synthetic capacity")
-
     capacity_options = [
         "50K-100K",
         "100K-250K",
@@ -86,96 +206,68 @@ def generate_opportunities():
     ]
 
     # -----------------------------
-    # CONFIG
+    # DERIVE DONOR FEATURES
+    # -----------------------------
+    if "donor_id" in gifts.columns:
+        numeric_cols = gifts.select_dtypes(include=["number"]).columns.tolist()
+        numeric_cols = [c for c in numeric_cols if c != "donor_id"]
+        preferred = [
+            c for c in numeric_cols if "amount" in c.lower() or "value" in c.lower()
+        ]
+        amount_col = (
+            preferred[0] if preferred else (numeric_cols[0] if numeric_cols else None)
+        )
+
+        if amount_col:
+            print(f"💰 Using '{amount_col}' as donation column")
+            donor_stats = (
+                gifts.groupby("donor_id")
+                .agg(avg_gift=(amount_col, "mean"), gift_count=(amount_col, "count"))
+                .reset_index()
+            )
+            donors = donors.merge(donor_stats, on="donor_id", how="left")
+
+    donors["avg_gift"] = donors.get("avg_gift", pd.Series()).fillna(500)
+    donors["gift_count"] = donors.get("gift_count", pd.Series()).fillna(1)
+
+    # -----------------------------
+    # STABLE CONTACT ID MAP
+    # 1:1 between donor_id and contact_id
+    # -----------------------------
+    contact_id_map = {
+        donor_id: generate_id("contact") for donor_id in donors["donor_id"].unique()
+    }
+
+    # -----------------------------
+    # GENERATE OPPORTUNITIES + STAGE HISTORY
     # -----------------------------
     AVG_OPPS_PER_DONOR = 3.5
     MAX_OPPS_PER_DONOR = 10
 
-    pipeline_stages = [
-        "Discovery",
-        "Engagement",
-        "Evaluation",
-        "Proposal",
-        "Negotiation",
-        "Committed",
-        "Lost",
-        "Rejected",
-    ]
-
-    late_stages = ["Negotiation", "Committed"]
-
-    # -----------------------------
-    # DERIVE DONOR FEATURES (FIXED)
-    # -----------------------------
-    if "donor_id" in gifts.columns:
-
-        numeric_cols = gifts.select_dtypes(include=["number"]).columns.tolist()
-        numeric_cols = [c for c in numeric_cols if c != "donor_id"]
-
-        preferred_cols = [
-            c for c in numeric_cols if "amount" in c.lower() or "value" in c.lower()
-        ]
-
-        if preferred_cols:
-            amount_col = preferred_cols[0]
-        elif numeric_cols:
-            amount_col = numeric_cols[0]
-        else:
-            amount_col = None
-
-        if amount_col:
-            print(f"💰 Using '{amount_col}' as donation column")
-
-            donor_stats = (
-                gifts.groupby("donor_id")
-                .agg(
-                    avg_gift=(amount_col, "mean"),
-                    gift_count=(amount_col, "count"),
-                )
-                .reset_index()
-            )
-
-            donors = donors.merge(donor_stats, on="donor_id", how="left")
-        else:
-            print("⚠️ No usable numeric column found")
-
-    donors["avg_gift"] = donors.get("avg_gift", pd.Series()).fillna(10000)
-    donors["gift_count"] = donors.get("gift_count", pd.Series()).fillna(1)
-
-    # -----------------------------
-    # GENERATE OPPORTUNITIES
-    # -----------------------------
-    rows = []
+    opp_rows = []  # one row per opportunity (current state)
+    stage_rows = []  # one row per stage transition (full history)
 
     for _, donor in donors.iterrows():
 
         donor_id = donor["donor_id"]
+        contact_id = contact_id_map[donor_id]
 
-        num_opps = min(
-            np.random.poisson(AVG_OPPS_PER_DONOR),
-            MAX_OPPS_PER_DONOR,
-        )
+        avg_gift = donor.get("avg_gift", 500)
+        if pd.isna(avg_gift) or avg_gift <= 0:
+            avg_gift = 500
+
+        num_opps = min(np.random.poisson(AVG_OPPS_PER_DONOR), MAX_OPPS_PER_DONOR)
         num_opps = max(num_opps, 1)
 
         for _ in range(num_opps):
 
-            stage = random.choice(pipeline_stages)
-            close_date = random_date()
-            is_closed, is_won = assign_outcome(stage, close_date, late_stages)
+            opp_id = generate_id("opp")
+            start_date = random_date()
+            amount = synthetic_ask_amount(avg_gift)
+            gift_type = assign_gift_type(amount)
 
-            avg_gift = donor.get("avg_gift", 10000)
-
-            # FIXED amount generation
-            if pd.isna(avg_gift) or avg_gift <= 0:
-                avg_gift = random.randint(5000, 25000)
-
-            amount = int(np.random.lognormal(mean=np.log(avg_gift), sigma=0.75))
-
-            amount = max(amount, 1000)
-            amount = min(amount, avg_gift * 20)
-
-            fiscal_year = close_date.year + (1 if close_date.month >= 7 else 0)
-            fiscal_quarter = ((close_date.month - 1) // 3) + 1
+            fiscal_year = start_date.year + (1 if start_date.month >= 7 else 0)
+            fiscal_quarter = ((start_date.month - 1) // 3) + 1
 
             capacity_value = (
                 donor.get(capacity_col)
@@ -183,37 +275,73 @@ def generate_opportunities():
                 else random.choice(capacity_options)
             )
 
-            row = {
-                "sector": donor.get("sector", "Unknown"),
-                "capacity_band": capacity_value,
-                "stage": stage,
-                "deal_amount": amount,
-                "stage_probability_pct": stage_probability(stage),
-                "expected_close_date": close_date.strftime("%Y-%m-%d"),
-                "fiscal_year": fiscal_year,
-                "fiscal_quarter": fiscal_quarter,
-                "is_closed": is_closed,
-                "is_successful": is_won,
-                "opportunity_id": generate_id("opp"),
-                "donor_id": donor_id,
-                "contact_id": donor.get("contact_id", generate_id("contact")),
-            }
+            # Simulate full lifecycle
+            transitions = simulate_lifecycle(start_date)
+            is_closed, is_successful = is_closed_won(transitions)
 
-            rows.append(row)
+            current = transitions[-1]  # latest stage = current state
 
-    opps = pd.DataFrame(rows)
+            # ── opportunities table (one row, current state) ──────────────────
+            opp_rows.append(
+                {
+                    "opportunity_id": opp_id,
+                    "donor_id": donor_id,
+                    "contact_id": contact_id,
+                    "sector": donor.get("sector", "Unknown"),
+                    "capacity_band": capacity_value,
+                    "gift_type": gift_type,
+                    "deal_amount": amount,
+                    "current_stage": current["stage"],
+                    "current_stage_probability_pct": current["stage_probability_pct"],
+                    "stage_entry_date": current["stage_entry_date"],
+                    "fiscal_year": fiscal_year,
+                    "fiscal_quarter": fiscal_quarter,
+                    "is_closed": is_closed,
+                    "is_successful": is_successful,
+                    "total_stage_count": len(transitions),
+                }
+            )
+
+            # ── opportunity_stages table (one row per transition) ─────────────
+            for t in transitions:
+                stage_rows.append(
+                    {
+                        "opportunity_id": opp_id,
+                        "donor_id": donor_id,
+                        "stage": t["stage"],
+                        "previous_stage": t["previous_stage"],
+                        "stage_entry_date": t["stage_entry_date"],
+                        "stage_probability_pct": t["stage_probability_pct"],
+                        "is_current": t["is_current"],
+                        "deal_amount": amount,
+                        "gift_type": gift_type,
+                    }
+                )
+
+    opps = pd.DataFrame(opp_rows)
+    stages = pd.DataFrame(stage_rows)
 
     # -----------------------------
     # SAVE
     # -----------------------------
     os.makedirs("data/synthetic", exist_ok=True)
 
-    output_path = "data/synthetic/synthetic_opportunities.csv"
-    opps.to_csv(output_path, index=False)
+    opps.to_csv("data/synthetic/synthetic_opportunities.csv", index=False)
+    stages.to_csv("data/synthetic/opportunity_stages.csv", index=False)
 
-    print(f"✅ Opportunities generated: {len(opps)}")
-    print(f"📊 Avg opps per donor: {len(opps) / len(donors)}")
-    print(f"📁 Saved to: {output_path}")
+    print(f"\n✅ Opportunities generated:   {len(opps):,}")
+    print(f"📋 Stage transitions logged:  {len(stages):,}")
+    print(f"📊 Avg opps per donor:        {len(opps) / len(donors):.1f}")
+    print(f"📊 Avg stages per opp:        {len(stages) / len(opps):.1f}")
+    print(f"\n🎁 Gift type distribution:")
+    print(opps["gift_type"].value_counts().to_string())
+    print(f"\n🏁 Outcome distribution:")
+    print(opps[["is_closed", "is_successful"]].value_counts().to_string())
+    print(f"\n💰 Deal amount stats:")
+    print(opps["deal_amount"].describe().apply(lambda x: f"${x:,.0f}").to_string())
+    print(f"\n📁 Saved:")
+    print(f"   data/synthetic/synthetic_opportunities.csv")
+    print(f"   data/synthetic/opportunity_stages.csv")
 
 
 # -----------------------------

@@ -142,12 +142,9 @@ stage_order = [
 active_stages = ["Discovery", "Engagement", "Evaluation", "Proposal", "Negotiation"]
 
 # ── ML Model — train on closed opps, score open ones ─────────────────────────
-# Exclude Committed/Lost/Rejected from training — their outcomes are
-# deterministic by definition and cause perfect data leakage
-closed = df[df["is_closed"] & ~df["stage"].isin(["Committed", "Lost", "Rejected"])].copy()
+closed = df[df["is_closed"]].copy()
 open_opps = df[~df["is_closed"]].copy()
 
-# Encode categoricals
 cat_cols = ["stage", "gift_type", "sector"]
 encoders = {}
 for col in cat_cols:
@@ -155,31 +152,25 @@ for col in cat_cols:
     closed[col + "_enc"] = le.fit_transform(closed[col].astype(str))
     encoders[col] = le
 
-feature_cols = [
-    "stage_enc",
-    "gift_type_enc",
-    "sector_enc",
-    "stage_probability_pct",
-    "deal_amount",
-]
-
-X_train = closed[
-    [c for c in [f + "_enc" for f in cat_cols] + ["deal_amount"]]
-]
+X_train = closed[[c + "_enc" for c in cat_cols] + ["deal_amount"]]
 y_train = closed["is_successful"].astype(int)
 
-from sklearn.model_selection import cross_val_score
+mask = X_train.notna().all(axis=1)
+X_train = X_train[mask]
+y_train = y_train[mask]
+
+if len(X_train) == 0 or y_train.nunique() < 2:
+    st.error("Not enough closed opportunities to train the model. Try uploading a larger dataset.")
+    st.stop()
 
 model = LogisticRegression(max_iter=1000)
 model.fit(X_train, y_train)
 
-# Cross-validated AUC to avoid inflated in-sample score
 auc = cross_val_score(
     LogisticRegression(max_iter=1000), X_train, y_train,
     cv=5, scoring="roc_auc"
 ).mean()
 
-# Score open opportunities
 for col in cat_cols:
     le = encoders[col]
     known = set(le.classes_)
@@ -189,7 +180,9 @@ for col in cat_cols:
         .apply(lambda x: le.transform([x])[0] if x in known else 0)
     )
 
-X_open = open_opps[[c + "_enc" for c in cat_cols] + ["deal_amount"]]
+closed_scored["close_probability"] = model.predict_proba(
+    closed_scored[[c + "_enc" for c in cat_cols] + ["deal_amount"]]
+)[:, 1]
 open_opps["close_probability"] = model.predict_proba(X_open)[:, 1]
 
 open_opps["priority"] = pd.qcut(

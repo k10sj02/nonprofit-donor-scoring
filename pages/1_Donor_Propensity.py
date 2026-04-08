@@ -493,7 +493,8 @@ st.markdown('<p class="section-header">Model vs Random: How Much Better?</p>',
             unsafe_allow_html=True)
 st.caption("Contacting top-scored donors finds retained donors faster — here's how much faster.")
 
-lift_df = donor_summary[["propensity_score", "donated_again"]].copy()
+# Compute lift on test set only — avoids in-sample inflation
+lift_df = donor_summary[test_mask][["propensity_score", "donated_again"]].copy()
 lift_df = lift_df.sort_values("propensity_score", ascending=False).reset_index(drop=True)
 
 total          = len(lift_df)

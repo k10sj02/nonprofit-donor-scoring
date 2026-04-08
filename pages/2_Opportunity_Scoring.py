@@ -3,7 +3,6 @@ import pandas as pd
 import numpy as np
 import altair as alt
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import cross_val_score
 from sklearn.preprocessing import LabelEncoder
 from pathlib import Path
@@ -55,8 +54,9 @@ with st.sidebar:
     st.header("⚙️ Settings")
     uploaded_file = st.file_uploader("Upload opportunities CSV", type="csv")
 
-    PROJECT_ROOT = Path(__file__).parent.parent
-    default_path = PROJECT_ROOT / "data" / "synthetic" / "synthetic_opportunities.csv"
+    PROJECT_ROOT  = Path(__file__).parent.parent
+    default_path  = PROJECT_ROOT / "data" / "synthetic" / "synthetic_opportunities.csv"
+    stages_path   = PROJECT_ROOT / "data" / "synthetic" / "opportunity_stages.csv"
 
     df = None
     if uploaded_file:
@@ -130,50 +130,101 @@ stage_order = [
 ]
 active_stages = ["Discovery", "Engagement", "Evaluation", "Proposal", "Negotiation"]
 
-# ── ML Model — train on closed opps, score open ones ─────────────────────────
-closed    = df[df["is_closed"]].copy()
-open_opps = df[~df["is_closed"]].copy()
+# ── ML Model ──────────────────────────────────────────────────────────────────
+# Train on opportunity_stages.csv intermediate snapshots — NOT terminal states.
+# This teaches the model: "given what we know at stage X, will this opp close?"
+# which avoids the leakage from terminal stage perfectly predicting outcome.
 
 cat_cols = ["stage", "gift_type", "sector"]
 encoders = {}
-for col in cat_cols:
-    le = LabelEncoder()
-    closed[col + "_enc"] = le.fit_transform(closed[col].astype(str))
-    encoders[col] = le
 
-# stage_probability_pct is excluded — it directly encodes the outcome
-# and causes perfect data leakage (AUC = 1.00)
-X_train = closed[[c + "_enc" for c in cat_cols] + ["deal_amount"]]
-y_train = closed["is_successful"].astype(int)
+if stages_path.exists():
+    stages_df = pd.read_csv(stages_path)
 
-# Drop rows with nulls
-mask    = X_train.notna().all(axis=1)
-X_train = X_train[mask]
-y_train = y_train[mask]
+    # Join outcome from opportunities table
+    outcome_map = df.set_index("opportunity_id")[["is_successful", "is_closed"]].to_dict("index")
+    stages_df["is_successful"] = stages_df["opportunity_id"].map(
+        lambda x: outcome_map.get(x, {}).get("is_successful", False)
+    )
+    stages_df["is_closed"] = stages_df["opportunity_id"].map(
+        lambda x: outcome_map.get(x, {}).get("is_closed", False)
+    )
+
+    # Training set: non-terminal, non-current stage snapshots from closed opportunities
+    # These represent "what did we know mid-journey?" — the honest training signal
+    terminal = ["Committed", "Lost", "Rejected"]
+    train_stages = stages_df[
+        stages_df["is_closed"] &
+        ~stages_df["stage"].isin(terminal) &
+        ~stages_df["is_current"]
+    ].copy()
+
+    if len(train_stages) > 100 and "sector" in train_stages.columns:
+        for col in cat_cols:
+            le = LabelEncoder()
+            train_stages[col + "_enc"] = le.fit_transform(train_stages[col].astype(str))
+            encoders[col] = le
+
+        X_train = train_stages[[c + "_enc" for c in cat_cols] + ["deal_amount"]]
+        y_train = train_stages["is_successful"].astype(int)
+
+        mask    = X_train.notna().all(axis=1)
+        X_train = X_train[mask]
+        y_train = y_train[mask]
+
+        use_stages_model = y_train.nunique() >= 2
+    else:
+        use_stages_model = False
+else:
+    use_stages_model = False
+
+# Fallback: train on closed opps from main table if stages not available
+if not use_stages_model:
+    st.caption("ℹ️ Training on closed opportunities (opportunity_stages.csv not found).")
+    closed = df[df["is_closed"]].copy()
+
+    for col in cat_cols:
+        le = LabelEncoder()
+        if col in closed.columns:
+            closed[col + "_enc"] = le.fit_transform(closed[col].astype(str))
+            encoders[col] = le
+
+    available_features = [c + "_enc" for c in cat_cols if c in closed.columns] + ["deal_amount"]
+    X_train = closed[available_features]
+    y_train = closed["is_successful"].astype(int)
+
+    mask    = X_train.notna().all(axis=1)
+    X_train = X_train[mask]
+    y_train = y_train[mask]
 
 if len(X_train) == 0 or y_train.nunique() < 2:
-    st.error("Not enough closed opportunities to train the model. Try uploading a larger dataset.")
+    st.error("Not enough data to train the model. Try uploading a larger dataset.")
     st.stop()
 
 model = LogisticRegression(max_iter=1000)
 model.fit(X_train, y_train)
 
-# Cross-validated AUC — honest out-of-sample estimate
 auc = cross_val_score(
     LogisticRegression(max_iter=1000), X_train, y_train,
     cv=5, scoring="roc_auc"
 ).mean()
 
-# Score open opportunities
-for col in cat_cols:
-    le    = encoders[col]
-    known = set(le.classes_)
-    open_opps[col + "_enc"] = (
-        open_opps[col].astype(str)
-        .apply(lambda x: le.transform([x])[0] if x in known else 0)
-    )
+# ── Score open opportunities ───────────────────────────────────────────────────
+open_opps = df[~df["is_closed"]].copy()
+closed    = df[df["is_closed"]].copy()
 
-X_open = open_opps[[c + "_enc" for c in cat_cols] + ["deal_amount"]]
+feature_cols = [c + "_enc" for c in cat_cols if c in open_opps.columns] + ["deal_amount"]
+
+for col in cat_cols:
+    if col in encoders and col in open_opps.columns:
+        le    = encoders[col]
+        known = set(le.classes_)
+        open_opps[col + "_enc"] = (
+            open_opps[col].astype(str)
+            .apply(lambda x: le.transform([x])[0] if x in known else 0)
+        )
+
+X_open = open_opps[feature_cols]
 open_opps["close_probability"] = model.predict_proba(X_open)[:, 1]
 
 open_opps["priority"] = pd.qcut(
@@ -226,7 +277,7 @@ with c1:
         .agg(count=("opportunity_id", "count"), total_value=("deal_amount", "sum"))
         .reset_index()
     )
-    pipeline_chart = (
+    st.altair_chart(
         alt.Chart(to_display(pipeline_data))
         .mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4)
         .encode(
@@ -239,9 +290,9 @@ with c1:
                 alt.Tooltip("total_value:Q", title="Total Value", format="$,.0f"),
             ],
         )
-        .properties(height=260)
+        .properties(height=260),
+        use_container_width=True,
     )
-    st.altair_chart(pipeline_chart, use_container_width=True)
 
 with c2:
     st.markdown('<p class="section-header">Win Rate by Stage</p>', unsafe_allow_html=True)
@@ -251,7 +302,7 @@ with c2:
         .reset_index()
         .rename(columns={"is_successful": "win_rate"})
     )
-    win_chart = (
+    st.altair_chart(
         alt.Chart(to_display(win_data))
         .mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4)
         .encode(
@@ -263,9 +314,9 @@ with c2:
                 alt.Tooltip("win_rate:Q", title="Win Rate", format=".1%"),
             ],
         )
-        .properties(height=260)
+        .properties(height=260),
+        use_container_width=True,
     )
-    st.altair_chart(win_chart, use_container_width=True)
 
 # ── Charts row 2 ──────────────────────────────────────────────────────────────
 c3, c4 = st.columns(2)
@@ -279,7 +330,7 @@ with c3:
         .reset_index()
         .rename(columns={"deal_amount": "median_deal"})
     )
-    size_chart = (
+    st.altair_chart(
         alt.Chart(to_display(size_data))
         .mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4, color="#3498db", opacity=0.85)
         .encode(
@@ -291,9 +342,9 @@ with c3:
                 alt.Tooltip("median_deal:Q", title="Median Deal", format="$,.0f"),
             ],
         )
-        .properties(height=260)
+        .properties(height=260),
+        use_container_width=True,
     )
-    st.altair_chart(size_chart, use_container_width=True)
 
 with c4:
     st.markdown('<p class="section-header">Close Probability vs Deal Size</p>', unsafe_allow_html=True)
@@ -301,8 +352,7 @@ with c4:
     scatter_data["deal_amount"]       = scatter_data["deal_amount"].astype(float)
     scatter_data["close_probability"] = scatter_data["close_probability"].astype(float)
     sampled = scatter_data.sample(min(1000, len(scatter_data)), random_state=42).reset_index(drop=True)
-
-    scatter = (
+    st.altair_chart(
         alt.Chart(sampled)
         .mark_circle(size=35, opacity=0.45)
         .encode(
@@ -317,9 +367,9 @@ with c4:
                 alt.Tooltip("stage:N", title="Stage"),
             ],
         )
-        .properties(height=260)
+        .properties(height=260),
+        use_container_width=True,
     )
-    st.altair_chart(scatter, use_container_width=True)
 
 st.divider()
 
@@ -330,11 +380,19 @@ st.markdown(
 )
 st.caption("Contacting top-scored opportunities finds winners faster — here's how much faster.")
 
-# Re-score closed opps using same features (no leaking stage_probability_pct)
+# Re-score closed opps for lift chart
+for col in cat_cols:
+    if col in encoders and col in closed.columns:
+        le    = encoders[col]
+        known = set(le.classes_)
+        closed[col + "_enc"] = (
+            closed[col].astype(str)
+            .apply(lambda x: le.transform([x])[0] if x in known else 0)
+        )
+
+X_closed = closed[feature_cols]
 closed_scored = closed.copy()
-closed_scored["close_probability"] = model.predict_proba(
-    closed_scored[[c + "_enc" for c in cat_cols] + ["deal_amount"]]
-)[:, 1]
+closed_scored["close_probability"] = model.predict_proba(X_closed)[:, 1]
 
 lift_df = closed_scored[["close_probability", "is_successful"]].copy()
 lift_df = lift_df.sort_values("close_probability", ascending=False).reset_index(drop=True)

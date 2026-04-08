@@ -109,11 +109,14 @@ with st.sidebar:
     st.header("⚙️ Settings")
     uploaded_file = st.file_uploader("Upload donation data (CSV)", type="csv")
 
-    PROJECT_ROOT = Path(__file__).parent
+    PROJECT_ROOT = Path(__file__).parent.parent
     default_path = PROJECT_ROOT / "outputs" / "donations_clean.csv"
 
     df = None
-    if uploaded_file:
+    if "mapped_df" in st.session_state:
+        df = st.session_state["mapped_df"]
+        st.success("Using mapped dataset from Upload & Map")
+    elif uploaded_file:
         df = pd.read_csv(uploaded_file)
         st.success("Using uploaded dataset")
     elif default_path.exists():

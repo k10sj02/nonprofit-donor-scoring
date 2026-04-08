@@ -117,7 +117,13 @@ with st.expander("📖 How to use this tool", expanded=False):
     )
 
 # ── Data prep ─────────────────────────────────────────────────────────────────
-df["expected_close_date"] = pd.to_datetime(df["expected_close_date"], errors="coerce")
+df["stage_entry_date"] = pd.to_datetime(df["stage_entry_date"], errors="coerce")
+df = df.rename(
+    columns={
+        "current_stage": "stage",
+        "current_stage_probability_pct": "stage_probability_pct",
+    }
+)
 df["is_closed"] = df["is_closed"].astype(bool)
 df["is_successful"] = df["is_successful"].astype(bool)
 
@@ -488,7 +494,7 @@ show_cols = [
     "stage_probability_pct",
     "close_probability",
     "priority",
-    "expected_close_date",
+    "stage_entry_date",
     "fiscal_year",
     "fiscal_quarter",
 ]
@@ -514,7 +520,7 @@ st.dataframe(
             format="%.2f",
         ),
         "priority": st.column_config.TextColumn("Priority"),
-        "expected_close_date": st.column_config.TextColumn("Expected Close"),
+        "stage_entry_date": st.column_config.TextColumn("Stage Entry Date"),
         "fiscal_year": st.column_config.NumberColumn("FY", format="%d"),
         "fiscal_quarter": st.column_config.NumberColumn("Q", format="%d"),
     },

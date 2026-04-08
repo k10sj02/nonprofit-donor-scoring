@@ -256,11 +256,18 @@ donor_summary["donated_again"] = donor_summary["donor_id"].isin(future_donors).a
 
 # ── Model features ────────────────────────────────────────────────────────────
 BASE_FEATURES = [
-    # RFM core
-    "recency_days", "donation_count", "amount_log", "avg_donation_log",
-    "months_since_last", "days_since_first", "giving_frequency_ratio",
-    # Giving behaviour flags
-    "donor_last_3yrs", "gift_100_last_3yrs", "gift_100_lifetime", "never_donated_flag", "first_gift_missing_flag",
+    # Core RFM — genuinely predictive
+    "recency_days",
+    "donation_count",
+    "amount_log",
+    "avg_donation_log",
+    "months_since_last",
+    "days_since_first",
+    "giving_frequency_ratio",
+    # Lifetime flags only — not windowed
+    "gift_100_lifetime",
+    "first_gift_missing_flag",
+    "never_donated_flag",
     # Engagement
     "newsletter_opt_in",
     # Pipeline proxy

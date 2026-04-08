@@ -4,6 +4,7 @@ import numpy as np
 import altair as alt
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
+from sklearn.model_selection import cross_val_score
 from pathlib import Path
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -175,7 +176,12 @@ model = LogisticRegression(max_iter=1000)
 model.fit(X, y)
 
 donor_summary["propensity_score"] = model.predict_proba(X)[:, 1]
-auc = roc_auc_score(y, donor_summary["propensity_score"])
+
+# Cross-validated AUC to avoid inflated in-sample score
+auc = cross_val_score(
+    LogisticRegression(max_iter=1000), X, y,
+    cv=5, scoring="roc_auc"
+).mean()
 
 donor_summary["segment"] = pd.qcut(
     donor_summary["propensity_score"],

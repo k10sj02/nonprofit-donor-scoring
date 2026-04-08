@@ -4,6 +4,7 @@ import numpy as np
 import altair as alt
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
+from sklearn.model_selection import cross_val_score
 from sklearn.preprocessing import LabelEncoder
 from pathlib import Path
 
@@ -169,10 +170,16 @@ X_train = closed[
 ]
 y_train = closed["is_successful"].astype(int)
 
+from sklearn.model_selection import cross_val_score
+
 model = LogisticRegression(max_iter=1000)
 model.fit(X_train, y_train)
 
-auc = roc_auc_score(y_train, model.predict_proba(X_train)[:, 1])
+# Cross-validated AUC to avoid inflated in-sample score
+auc = cross_val_score(
+    LogisticRegression(max_iter=1000), X_train, y_train,
+    cv=5, scoring="roc_auc"
+).mean()
 
 # Score open opportunities
 for col in cat_cols:

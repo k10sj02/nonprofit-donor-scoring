@@ -142,7 +142,9 @@ stage_order = [
 active_stages = ["Discovery", "Engagement", "Evaluation", "Proposal", "Negotiation"]
 
 # ── ML Model — train on closed opps, score open ones ─────────────────────────
-closed = df[df["is_closed"]].copy()
+# Exclude Committed/Lost/Rejected from training — their outcomes are
+# deterministic by definition and cause perfect data leakage
+closed = df[df["is_closed"] & ~df["stage"].isin(["Committed", "Lost", "Rejected"])].copy()
 open_opps = df[~df["is_closed"]].copy()
 
 # Encode categoricals
@@ -162,11 +164,7 @@ feature_cols = [
 ]
 
 X_train = closed[
-    [
-        c
-        for c in [f + "_enc" for f in cat_cols]
-        + ["stage_probability_pct", "deal_amount"]
-    ]
+    [c for c in [f + "_enc" for f in cat_cols] + ["deal_amount"]]
 ]
 y_train = closed["is_successful"].astype(int)
 
@@ -191,9 +189,7 @@ for col in cat_cols:
         .apply(lambda x: le.transform([x])[0] if x in known else 0)
     )
 
-X_open = open_opps[
-    [c + "_enc" for c in cat_cols] + ["stage_probability_pct", "deal_amount"]
-]
+X_open = open_opps[[c + "_enc" for c in cat_cols] + ["deal_amount"]]
 open_opps["close_probability"] = model.predict_proba(X_open)[:, 1]
 
 open_opps["priority"] = pd.qcut(
@@ -402,9 +398,7 @@ lift_df = closed[
 # Re-score closed opps for lift chart
 closed_scored = closed.copy()
 closed_scored["close_probability"] = model.predict_proba(
-    closed_scored[
-        [c + "_enc" for c in cat_cols] + ["stage_probability_pct", "deal_amount"]
-    ]
+    closed_scored[[c + "_enc" for c in cat_cols] + ["deal_amount"]]
 )[:, 1]
 lift_df = closed_scored[["close_probability", "is_successful"]].copy()
 lift_df = lift_df.sort_values("close_probability", ascending=False).reset_index(

@@ -85,8 +85,7 @@ if df is None:
 
 # ── How to use ────────────────────────────────────────────────────────────────
 with st.expander("📖 How to use this tool", expanded=False):
-    st.markdown(
-        """
+    st.markdown("""
     **This dashboard scores open pipeline opportunities by their likelihood to close successfully.**
     Use the sidebar filter to focus on a specific gift type.
 
@@ -103,7 +102,7 @@ with st.expander("📖 How to use this tool", expanded=False):
     **Reading the charts**
     - **Pipeline by Stage** — deal count and total value at each stage
     - **Win Rate by Stage** — confirms model logic; later stages should win more
-    - **Deal Size Distribution** — spread of opportunity amounts across gift types
+    - **Deal Size by Gift Type** — spread of opportunity amounts across gift types
     - **Close Probability vs Deal Size** — larger deals aren't always easier to close
     - **Model vs Random** — how much better the model is at finding winners vs picking randomly
 
@@ -114,35 +113,25 @@ with st.expander("📖 How to use this tool", expanded=False):
     2. Focus on high-score opportunities in **Negotiation** or **Proposal** stage
     3. For low-score opportunities with large deal amounts, investigate blockers
     4. Re-score monthly as pipeline stages and deal details are updated
-    """
-    )
+    """)
 
 # ── Data prep ─────────────────────────────────────────────────────────────────
 df["stage_entry_date"] = pd.to_datetime(df["stage_entry_date"], errors="coerce")
-df = df.rename(
-    columns={
-        "current_stage": "stage",
-        "current_stage_probability_pct": "stage_probability_pct",
-    }
-)
-df["is_closed"] = df["is_closed"].astype(bool)
+df = df.rename(columns={
+    "current_stage":                 "stage",
+    "current_stage_probability_pct": "stage_probability_pct",
+})
+df["is_closed"]     = df["is_closed"].astype(bool)
 df["is_successful"] = df["is_successful"].astype(bool)
 
-# Stage ordering
 stage_order = [
-    "Discovery",
-    "Engagement",
-    "Evaluation",
-    "Proposal",
-    "Negotiation",
-    "Committed",
-    "Lost",
-    "Rejected",
+    "Discovery", "Engagement", "Evaluation",
+    "Proposal", "Negotiation", "Committed", "Lost", "Rejected",
 ]
 active_stages = ["Discovery", "Engagement", "Evaluation", "Proposal", "Negotiation"]
 
 # ── ML Model — train on closed opps, score open ones ─────────────────────────
-closed = df[df["is_closed"]].copy()
+closed    = df[df["is_closed"]].copy()
 open_opps = df[~df["is_closed"]].copy()
 
 cat_cols = ["stage", "gift_type", "sector"]
@@ -152,10 +141,13 @@ for col in cat_cols:
     closed[col + "_enc"] = le.fit_transform(closed[col].astype(str))
     encoders[col] = le
 
+# stage_probability_pct is excluded — it directly encodes the outcome
+# and causes perfect data leakage (AUC = 1.00)
 X_train = closed[[c + "_enc" for c in cat_cols] + ["deal_amount"]]
 y_train = closed["is_successful"].astype(int)
 
-mask = X_train.notna().all(axis=1)
+# Drop rows with nulls
+mask    = X_train.notna().all(axis=1)
 X_train = X_train[mask]
 y_train = y_train[mask]
 
@@ -166,23 +158,22 @@ if len(X_train) == 0 or y_train.nunique() < 2:
 model = LogisticRegression(max_iter=1000)
 model.fit(X_train, y_train)
 
+# Cross-validated AUC — honest out-of-sample estimate
 auc = cross_val_score(
     LogisticRegression(max_iter=1000), X_train, y_train,
     cv=5, scoring="roc_auc"
 ).mean()
 
+# Score open opportunities
 for col in cat_cols:
-    le = encoders[col]
+    le    = encoders[col]
     known = set(le.classes_)
     open_opps[col + "_enc"] = (
-        open_opps[col]
-        .astype(str)
+        open_opps[col].astype(str)
         .apply(lambda x: le.transform([x])[0] if x in known else 0)
     )
 
-closed_scored["close_probability"] = model.predict_proba(
-    closed_scored[[c + "_enc" for c in cat_cols] + ["deal_amount"]]
-)[:, 1]
+X_open = open_opps[[c + "_enc" for c in cat_cols] + ["deal_amount"]]
 open_opps["close_probability"] = model.predict_proba(X_open)[:, 1]
 
 open_opps["priority"] = pd.qcut(
@@ -195,22 +186,22 @@ open_opps["priority"] = pd.qcut(
 # ── Apply gift type filter ────────────────────────────────────────────────────
 if gift_filter != "All":
     chart_open = open_opps[open_opps["gift_type"] == gift_filter].copy()
-    chart_all = df[df["gift_type"] == gift_filter].copy()
+    chart_all  = df[df["gift_type"] == gift_filter].copy()
 else:
     chart_open = open_opps.copy()
-    chart_all = df.copy()
+    chart_all  = df.copy()
 
 # ── KPIs ──────────────────────────────────────────────────────────────────────
-total_open = len(open_opps)
-total_pipeline = open_opps["deal_amount"].sum()
-win_rate = closed["is_successful"].mean()
+total_open        = len(open_opps)
+total_pipeline    = open_opps["deal_amount"].sum()
+win_rate          = closed["is_successful"].mean()
 high_priority_pct = (open_opps["priority"] == "High").mean()
 
 k1, k2, k3, k4 = st.columns(4)
-k1.metric("Open Opportunities", f"{total_open:,}")
+k1.metric("Open Opportunities",   f"{total_open:,}")
 k2.metric("Total Pipeline Value", f"${total_pipeline:,.0f}")
-k3.metric("Historical Win Rate", f"{win_rate:.1%}")
-k4.metric("High Priority Opps", f"{high_priority_pct:.1%}")
+k3.metric("Historical Win Rate",  f"{win_rate:.1%}")
+k4.metric("High Priority Opps",   f"{high_priority_pct:.1%}")
 
 st.divider()
 
@@ -218,28 +209,17 @@ seg_colors = alt.Scale(
     domain=["Low", "Medium", "High"],
     range=["#e74c3c", "#f39c12", "#2ecc71"],
 )
-
 stage_colors = alt.Scale(
     domain=stage_order,
-    range=[
-        "#95a5a6",
-        "#7f8c8d",
-        "#3498db",
-        "#9b59b6",
-        "#e67e22",
-        "#2ecc71",
-        "#e74c3c",
-        "#c0392b",
-    ],
+    range=["#95a5a6", "#7f8c8d", "#3498db", "#9b59b6",
+           "#e67e22", "#2ecc71", "#e74c3c", "#c0392b"],
 )
 
 # ── Charts row 1 ──────────────────────────────────────────────────────────────
 c1, c2 = st.columns(2)
 
 with c1:
-    st.markdown(
-        '<p class="section-header">Pipeline by Stage</p>', unsafe_allow_html=True
-    )
+    st.markdown('<p class="section-header">Pipeline by Stage</p>', unsafe_allow_html=True)
     pipeline_data = (
         chart_all[chart_all["stage"].isin(active_stages)]
         .groupby("stage")
@@ -264,9 +244,7 @@ with c1:
     st.altair_chart(pipeline_chart, use_container_width=True)
 
 with c2:
-    st.markdown(
-        '<p class="section-header">Win Rate by Stage</p>', unsafe_allow_html=True
-    )
+    st.markdown('<p class="section-header">Win Rate by Stage</p>', unsafe_allow_html=True)
     win_data = (
         closed.groupby("stage")["is_successful"]
         .mean()
@@ -293,9 +271,7 @@ with c2:
 c3, c4 = st.columns(2)
 
 with c3:
-    st.markdown(
-        '<p class="section-header">Deal Size by Gift Type</p>', unsafe_allow_html=True
-    )
+    st.markdown('<p class="section-header">Deal Size by Gift Type</p>', unsafe_allow_html=True)
     gift_type_order = ["Annual Giving", "Major Gifts", "Planned Giving"]
     size_data = (
         chart_all.groupby("gift_type")["deal_amount"]
@@ -305,16 +281,11 @@ with c3:
     )
     size_chart = (
         alt.Chart(to_display(size_data))
-        .mark_bar(
-            cornerRadiusTopLeft=4, cornerRadiusTopRight=4, color="#3498db", opacity=0.85
-        )
+        .mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4, color="#3498db", opacity=0.85)
         .encode(
             x=alt.X("gift_type:N", sort=gift_type_order, title="Gift Type"),
-            y=alt.Y(
-                "median_deal:Q",
-                title="Median Deal Size ($)",
-                axis=alt.Axis(format="$,.0f"),
-            ),
+            y=alt.Y("median_deal:Q", title="Median Deal Size ($)",
+                     axis=alt.Axis(format="$,.0f")),
             tooltip=[
                 alt.Tooltip("gift_type:N", title="Gift Type"),
                 alt.Tooltip("median_deal:Q", title="Median Deal", format="$,.0f"),
@@ -325,39 +296,23 @@ with c3:
     st.altair_chart(size_chart, use_container_width=True)
 
 with c4:
-    st.markdown(
-        '<p class="section-header">Close Probability vs Deal Size</p>',
-        unsafe_allow_html=True,
-    )
-    scatter_data = chart_open[
-        ["deal_amount", "close_probability", "priority", "stage"]
-    ].copy()
-    scatter_data["deal_amount"] = scatter_data["deal_amount"].astype(float)
+    st.markdown('<p class="section-header">Close Probability vs Deal Size</p>', unsafe_allow_html=True)
+    scatter_data = chart_open[["deal_amount", "close_probability", "priority", "stage"]].copy()
+    scatter_data["deal_amount"]       = scatter_data["deal_amount"].astype(float)
     scatter_data["close_probability"] = scatter_data["close_probability"].astype(float)
-    sampled = scatter_data.sample(
-        min(1000, len(scatter_data)), random_state=42
-    ).reset_index(drop=True)
+    sampled = scatter_data.sample(min(1000, len(scatter_data)), random_state=42).reset_index(drop=True)
 
     scatter = (
         alt.Chart(sampled)
         .mark_circle(size=35, opacity=0.45)
         .encode(
-            x=alt.X(
-                "deal_amount:Q", title="Deal Amount ($)", axis=alt.Axis(format="$,.0f")
-            ),
-            y=alt.Y(
-                "close_probability:Q",
-                title="Close Probability",
-                axis=alt.Axis(format=".0%"),
-            ),
-            color=alt.Color(
-                "priority:N", scale=seg_colors, legend=alt.Legend(title="Priority")
-            ),
+            x=alt.X("deal_amount:Q", title="Deal Amount ($)", axis=alt.Axis(format="$,.0f")),
+            y=alt.Y("close_probability:Q", title="Close Probability",
+                     axis=alt.Axis(format=".0%")),
+            color=alt.Color("priority:N", scale=seg_colors, legend=alt.Legend(title="Priority")),
             tooltip=[
                 alt.Tooltip("deal_amount:Q", title="Deal Amount", format="$,.0f"),
-                alt.Tooltip(
-                    "close_probability:Q", title="Close Probability", format=".1%"
-                ),
+                alt.Tooltip("close_probability:Q", title="Close Probability", format=".1%"),
                 alt.Tooltip("priority:N", title="Priority"),
                 alt.Tooltip("stage:N", title="Stage"),
             ],
@@ -373,49 +328,32 @@ st.markdown(
     '<p class="section-header">Model vs Random: How Much Better?</p>',
     unsafe_allow_html=True,
 )
-st.caption(
-    "Contacting top-scored opportunities finds winners faster — here's how much faster."
-)
+st.caption("Contacting top-scored opportunities finds winners faster — here's how much faster.")
 
-lift_df = closed[
-    [
-        (
-            "close_probability"
-            if "close_probability" in closed.columns
-            else "stage_probability_pct"
-        ),
-        "is_successful",
-    ]
-].copy()
-
-# Re-score closed opps for lift chart
+# Re-score closed opps using same features (no leaking stage_probability_pct)
 closed_scored = closed.copy()
 closed_scored["close_probability"] = model.predict_proba(
     closed_scored[[c + "_enc" for c in cat_cols] + ["deal_amount"]]
 )[:, 1]
-lift_df = closed_scored[["close_probability", "is_successful"]].copy()
-lift_df = lift_df.sort_values("close_probability", ascending=False).reset_index(
-    drop=True
-)
 
-total_l = len(lift_df)
+lift_df = closed_scored[["close_probability", "is_successful"]].copy()
+lift_df = lift_df.sort_values("close_probability", ascending=False).reset_index(drop=True)
+
+total_l   = len(lift_df)
 total_won = lift_df["is_successful"].sum()
 
 steps = list(range(1, 101))
 model_capture, random_capture = [], []
 for pct in steps:
     n = max(1, int(total_l * pct / 100))
-    captured = lift_df["is_successful"].iloc[:n].sum()
-    model_capture.append(captured / total_won * 100)
+    model_capture.append(lift_df["is_successful"].iloc[:n].sum() / total_won * 100)
     random_capture.append(pct)
 
-lift_data = pd.DataFrame(
-    {
-        "pct_contacted": steps + steps,
-        "pct_won_captured": model_capture + random_capture,
-        "type": ["Model"] * 100 + ["Random"] * 100,
-    }
-)
+lift_data = pd.DataFrame({
+    "pct_contacted":    steps + steps,
+    "pct_won_captured": model_capture + random_capture,
+    "type":             ["Model"] * 100 + ["Random"] * 100,
+})
 
 lift_chart = (
     alt.Chart(lift_data)
@@ -441,37 +379,24 @@ lift_chart = (
     )
 )
 
-top33_model = (
-    lift_df["is_successful"].iloc[: int(total_l * 0.33)].sum() / total_won * 100
-)
-lift_at_33 = top33_model / 33.0
+top33_model = lift_df["is_successful"].iloc[:int(total_l * 0.33)].sum() / total_won * 100
+lift_at_33  = top33_model / 33.0
 
 col_chart, col_stat = st.columns([8, 1])
 with col_chart:
     st.altair_chart(lift_chart.properties(height=350), use_container_width=True)
 with col_stat:
-    st.metric(
-        "Lift at top 33%",
-        f"{lift_at_33:.1f}x",
-        help="Scoring top 33% of opportunities captures this many times more winners than random.",
-    )
-    st.metric(
-        "Won deals captured (top 33%)",
-        f"{top33_model:.1f}%",
-        help="% of all won deals found by prioritizing only the top third.",
-    )
-    st.metric(
-        "Model AUC",
-        f"{auc:.2f}",
-        help="Area under ROC curve. 0.5 = random, 1.0 = perfect.",
-    )
+    st.metric("Lift at top 33%", f"{lift_at_33:.1f}x",
+              help="Scoring top 33% of opportunities captures this many times more winners than random.")
+    st.metric("Won deals captured (top 33%)", f"{top33_model:.1f}%",
+              help="% of all won deals found by prioritizing only the top third.")
+    st.metric("Model AUC", f"{auc:.2f}",
+              help="Area under ROC curve. 0.5 = random, 1.0 = perfect.")
 
 st.divider()
 
 # ── Top Opportunities Leaderboard ─────────────────────────────────────────────
-display_df = chart_open.sort_values("close_probability", ascending=False).reset_index(
-    drop=True
-)
+display_df = chart_open.sort_values("close_probability", ascending=False).reset_index(drop=True)
 
 st.markdown(
     f'<p class="section-header">Top Opportunities '
@@ -480,17 +405,9 @@ st.markdown(
 )
 
 show_cols = [
-    "opportunity_id",
-    "donor_id",
-    "stage",
-    "gift_type",
-    "deal_amount",
-    "stage_probability_pct",
-    "close_probability",
-    "priority",
-    "stage_entry_date",
-    "fiscal_year",
-    "fiscal_quarter",
+    "opportunity_id", "donor_id", "stage", "gift_type",
+    "deal_amount", "stage_probability_pct", "close_probability",
+    "priority", "stage_entry_date", "fiscal_year", "fiscal_quarter",
 ]
 
 st.dataframe(
@@ -499,24 +416,19 @@ st.dataframe(
     height=350,
     hide_index=True,
     column_config={
-        "opportunity_id": st.column_config.TextColumn("Opportunity ID"),
-        "donor_id": st.column_config.TextColumn("Donor ID"),
-        "stage": st.column_config.TextColumn("Stage"),
-        "gift_type": st.column_config.TextColumn("Gift Type"),
-        "deal_amount": st.column_config.NumberColumn("Deal Amount", format="$%,.0f"),
-        "stage_probability_pct": st.column_config.NumberColumn(
-            "Stage %", format="%d%%"
+        "opportunity_id":        st.column_config.TextColumn("Opportunity ID"),
+        "donor_id":              st.column_config.TextColumn("Donor ID"),
+        "stage":                 st.column_config.TextColumn("Stage"),
+        "gift_type":             st.column_config.TextColumn("Gift Type"),
+        "deal_amount":           st.column_config.NumberColumn("Deal Amount", format="$%,.0f"),
+        "stage_probability_pct": st.column_config.NumberColumn("Stage %", format="%d%%"),
+        "close_probability":     st.column_config.ProgressColumn(
+            "Close Probability", min_value=0, max_value=1, format="%.2f",
         ),
-        "close_probability": st.column_config.ProgressColumn(
-            "Close Probability",
-            min_value=0,
-            max_value=1,
-            format="%.2f",
-        ),
-        "priority": st.column_config.TextColumn("Priority"),
-        "stage_entry_date": st.column_config.TextColumn("Stage Entry Date"),
-        "fiscal_year": st.column_config.NumberColumn("FY", format="%d"),
-        "fiscal_quarter": st.column_config.NumberColumn("Q", format="%d"),
+        "priority":              st.column_config.TextColumn("Priority"),
+        "stage_entry_date":      st.column_config.TextColumn("Stage Entry Date"),
+        "fiscal_year":           st.column_config.NumberColumn("FY", format="%d"),
+        "fiscal_quarter":        st.column_config.NumberColumn("Q",  format="%d"),
     },
 )
 

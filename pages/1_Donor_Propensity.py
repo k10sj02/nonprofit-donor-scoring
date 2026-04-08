@@ -260,8 +260,7 @@ BASE_FEATURES = [
     "recency_days", "donation_count", "amount_log", "avg_donation_log",
     "months_since_last", "days_since_first", "giving_frequency_ratio",
     # Giving behaviour flags
-    "donor_last_3yrs", "gift_100_last_3yrs", "gift_100_lifetime",
-    "has_recurring", "never_donated_flag", "first_gift_missing_flag",
+    "donor_last_3yrs", "gift_100_last_3yrs", "gift_100_lifetime", "never_donated_flag", "first_gift_missing_flag",
     # Engagement
     "newsletter_opt_in",
     # Pipeline proxy

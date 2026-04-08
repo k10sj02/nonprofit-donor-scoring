@@ -2,9 +2,13 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import altair as alt
+from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import cross_val_score
-from sklearn.preprocessing import LabelEncoder
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.impute import SimpleImputer
 from pathlib import Path
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -54,9 +58,9 @@ with st.sidebar:
     st.header("⚙️ Settings")
     uploaded_file = st.file_uploader("Upload opportunities CSV", type="csv")
 
-    PROJECT_ROOT  = Path(__file__).parent.parent
-    default_path  = PROJECT_ROOT / "data" / "synthetic" / "synthetic_opportunities.csv"
-    stages_path   = PROJECT_ROOT / "data" / "synthetic" / "opportunity_stages.csv"
+    PROJECT_ROOT = Path(__file__).parent.parent
+    default_path = PROJECT_ROOT / "data" / "synthetic" / "synthetic_opportunities.csv"
+    stages_path  = PROJECT_ROOT / "data" / "synthetic" / "opportunity_stages.csv"
 
     df = None
     if uploaded_file:
@@ -99,12 +103,15 @@ with st.expander("📖 How to use this tool", expanded=False):
 
     ---
 
-    **Reading the charts**
-    - **Pipeline by Stage** — deal count and total value at each stage
-    - **Win Rate by Stage** — confirms model logic; later stages should win more
-    - **Deal Size by Gift Type** — spread of opportunity amounts across gift types
-    - **Close Probability vs Deal Size** — larger deals aren't always easier to close
-    - **Model vs Random** — how much better the model is at finding winners vs picking randomly
+    **Model features**
+    The model uses the following signals to score each opportunity:
+    - **Relationship score** — fundraiser's assessment of relationship quality (1–10)
+    - **Amount (log)** — log-transformed deal size to reduce skew
+    - **Capacity band** — donor's estimated giving capacity (min/max)
+    - **Days in stage** — how long the opportunity has been at its current stage
+    - **Gift type** — Annual Giving, Major Gifts, or Planned Giving
+    - **Sector** — donor's industry sector
+    - **Fiscal quarter** — seasonality signal
 
     ---
 
@@ -124,108 +131,123 @@ df = df.rename(columns={
 df["is_closed"]     = df["is_closed"].astype(bool)
 df["is_successful"] = df["is_successful"].astype(bool)
 
-stage_order = [
-    "Discovery", "Engagement", "Evaluation",
-    "Proposal", "Negotiation", "Committed", "Lost", "Rejected",
-]
+stage_order   = ["Discovery", "Engagement", "Evaluation",
+                 "Proposal", "Negotiation", "Committed", "Lost", "Rejected"]
 active_stages = ["Discovery", "Engagement", "Evaluation", "Proposal", "Negotiation"]
 
+# ── Feature definitions (mirrors McGill feature set) ──────────────────────────
+NUMERIC_FEATURES = ["amount_log", "capacity_min", "capacity_max",
+                    "days_in_stage", "relationship_score", "fiscal_quarter"]
+CAT_FEATURES     = ["gift_type", "sector"]
+
+# Fallback: if new columns not present (old data), use minimal set
+has_new_features = all(c in df.columns for c in ["amount_log", "relationship_score", "days_in_stage"])
+if not has_new_features:
+    NUMERIC_FEATURES = ["deal_amount", "fiscal_quarter"]
+    CAT_FEATURES     = ["gift_type", "sector"]
+    st.caption("ℹ️ Regenerate data to unlock full feature set (relationship_score, capacity, days_in_stage).")
+
 # ── ML Model ──────────────────────────────────────────────────────────────────
-# Train on opportunity_stages.csv intermediate snapshots — NOT terminal states.
-# This teaches the model: "given what we know at stage X, will this opp close?"
-# which avoids the leakage from terminal stage perfectly predicting outcome.
+# Train on opportunity_stages intermediate snapshots (non-terminal, non-current)
+# from closed opportunities — the honest training signal as used in the McGill model.
 
-cat_cols = ["stage", "gift_type", "sector"]
-encoders = {}
+@st.cache_data(show_spinner="Training model...")
+def train_model(stages_path_str, df_json):
+    """Cache model training so it doesn't re-run on every interaction."""
+    import json
 
-if stages_path.exists():
-    stages_df = pd.read_csv(stages_path)
+    df_inner = pd.read_json(df_json)
+    stages_path_inner = Path(stages_path_str)
 
-    # Join outcome from opportunities table
-    outcome_map = df.set_index("opportunity_id")[["is_successful", "is_closed"]].to_dict("index")
-    stages_df["is_successful"] = stages_df["opportunity_id"].map(
-        lambda x: outcome_map.get(x, {}).get("is_successful", False)
-    )
-    stages_df["is_closed"] = stages_df["opportunity_id"].map(
-        lambda x: outcome_map.get(x, {}).get("is_closed", False)
-    )
+    numeric_transformer = Pipeline([
+        ("imputer", SimpleImputer(strategy="median")),
+        ("scaler",  StandardScaler()),
+    ])
+    cat_transformer = Pipeline([
+        ("imputer", SimpleImputer(strategy="constant", fill_value="Unknown")),
+        ("onehot",  OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
+    ])
 
-    # Training set: non-terminal, non-current stage snapshots from closed opportunities
-    # These represent "what did we know mid-journey?" — the honest training signal
-    terminal = ["Committed", "Lost", "Rejected"]
-    train_stages = stages_df[
-        stages_df["is_closed"] &
-        ~stages_df["stage"].isin(terminal) &
-        ~stages_df["is_current"]
-    ].copy()
+    # Determine which features are actually present
+    avail_numeric = [f for f in NUMERIC_FEATURES if f in df_inner.columns]
+    avail_cat     = [f for f in CAT_FEATURES     if f in df_inner.columns]
 
-    if len(train_stages) > 100 and "sector" in train_stages.columns:
-        for col in cat_cols:
-            le = LabelEncoder()
-            train_stages[col + "_enc"] = le.fit_transform(train_stages[col].astype(str))
-            encoders[col] = le
+    preprocessor = ColumnTransformer([
+        ("num", numeric_transformer, avail_numeric),
+        ("cat", cat_transformer,     avail_cat),
+    ])
 
-        X_train = train_stages[[c + "_enc" for c in cat_cols] + ["deal_amount"]]
-        y_train = train_stages["is_successful"].astype(int)
+    model_pipeline = Pipeline([
+        ("preprocess", preprocessor),
+        ("model",      HistGradientBoostingClassifier(
+            max_iter=200, learning_rate=0.05,
+            max_depth=4,  random_state=42,
+        )),
+    ])
 
-        mask    = X_train.notna().all(axis=1)
-        X_train = X_train[mask]
-        y_train = y_train[mask]
+    # Load stage snapshots for training if available
+    if stages_path_inner.exists():
+        stages_df = pd.read_csv(stages_path_inner)
+        outcome_map = df_inner.set_index("opportunity_id")[["is_successful", "is_closed"]].to_dict("index")
+        stages_df["is_successful"] = stages_df["opportunity_id"].map(
+            lambda x: outcome_map.get(x, {}).get("is_successful", False)
+        )
+        stages_df["is_closed"] = stages_df["opportunity_id"].map(
+            lambda x: outcome_map.get(x, {}).get("is_closed", False)
+        )
 
-        use_stages_model = y_train.nunique() >= 2
+        terminal = ["Committed", "Lost", "Rejected"]
+        train_df = stages_df[
+            stages_df["is_closed"] &
+            ~stages_df["stage"].isin(terminal) &
+            ~stages_df["is_current"]
+        ].copy()
     else:
-        use_stages_model = False
-else:
-    use_stages_model = False
+        train_df = df_inner[df_inner["is_closed"]].copy()
+        train_df = train_df.rename(columns={"stage": "current_stage"})
 
-# Fallback: train on closed opps from main table if stages not available
-if not use_stages_model:
-    st.caption("ℹ️ Training on closed opportunities (opportunity_stages.csv not found).")
-    closed = df[df["is_closed"]].copy()
+    avail_features = avail_numeric + avail_cat
+    train_df = train_df.dropna(subset=["is_successful"])
+    train_df = train_df[[f for f in avail_features if f in train_df.columns] + ["is_successful"]]
+    train_df = train_df.dropna(subset=[f for f in avail_features if f in train_df.columns])
 
-    for col in cat_cols:
-        le = LabelEncoder()
-        if col in closed.columns:
-            closed[col + "_enc"] = le.fit_transform(closed[col].astype(str))
-            encoders[col] = le
+    X = train_df[[f for f in avail_features if f in train_df.columns]]
+    y = train_df["is_successful"].astype(int)
 
-    available_features = [c + "_enc" for c in cat_cols if c in closed.columns] + ["deal_amount"]
-    X_train = closed[available_features]
-    y_train = closed["is_successful"].astype(int)
+    if len(X) < 50 or y.nunique() < 2:
+        return None, None, 0.0
 
-    mask    = X_train.notna().all(axis=1)
-    X_train = X_train[mask]
-    y_train = y_train[mask]
+    model_pipeline.fit(X, y)
 
-if len(X_train) == 0 or y_train.nunique() < 2:
-    st.error("Not enough data to train the model. Try uploading a larger dataset.")
+    auc = cross_val_score(
+        Pipeline([
+            ("preprocess", preprocessor),
+            ("model",      HistGradientBoostingClassifier(
+                max_iter=200, learning_rate=0.05,
+                max_depth=4,  random_state=42,
+            )),
+        ]),
+        X, y, cv=5, scoring="roc_auc"
+    ).mean()
+
+    return model_pipeline, avail_features, auc
+
+
+model_pipeline, feature_cols, auc = train_model(
+    str(stages_path),
+    df.to_json(),
+)
+
+if model_pipeline is None:
+    st.error("Not enough data to train the model. Try regenerating the synthetic data.")
     st.stop()
 
-model = LogisticRegression(max_iter=1000)
-model.fit(X_train, y_train)
-
-auc = cross_val_score(
-    LogisticRegression(max_iter=1000), X_train, y_train,
-    cv=5, scoring="roc_auc"
-).mean()
-
-# ── Score open opportunities ───────────────────────────────────────────────────
+# ── Score open opportunities ──────────────────────────────────────────────────
 open_opps = df[~df["is_closed"]].copy()
 closed    = df[df["is_closed"]].copy()
 
-feature_cols = [c + "_enc" for c in cat_cols if c in open_opps.columns] + ["deal_amount"]
-
-for col in cat_cols:
-    if col in encoders and col in open_opps.columns:
-        le    = encoders[col]
-        known = set(le.classes_)
-        open_opps[col + "_enc"] = (
-            open_opps[col].astype(str)
-            .apply(lambda x: le.transform([x])[0] if x in known else 0)
-        )
-
-X_open = open_opps[feature_cols]
-open_opps["close_probability"] = model.predict_proba(X_open)[:, 1]
+X_open = open_opps[[f for f in feature_cols if f in open_opps.columns]]
+open_opps["close_probability"] = model_pipeline.predict_proba(X_open)[:, 1]
 
 open_opps["priority"] = pd.qcut(
     open_opps["close_probability"],
@@ -347,29 +369,34 @@ with c3:
     )
 
 with c4:
-    st.markdown('<p class="section-header">Close Probability vs Deal Size</p>', unsafe_allow_html=True)
-    scatter_data = chart_open[["deal_amount", "close_probability", "priority", "stage"]].copy()
-    scatter_data["deal_amount"]       = scatter_data["deal_amount"].astype(float)
-    scatter_data["close_probability"] = scatter_data["close_probability"].astype(float)
-    sampled = scatter_data.sample(min(1000, len(scatter_data)), random_state=42).reset_index(drop=True)
-    st.altair_chart(
-        alt.Chart(sampled)
-        .mark_circle(size=35, opacity=0.45)
-        .encode(
-            x=alt.X("deal_amount:Q", title="Deal Amount ($)", axis=alt.Axis(format="$,.0f")),
-            y=alt.Y("close_probability:Q", title="Close Probability",
-                     axis=alt.Axis(format=".0%")),
-            color=alt.Color("priority:N", scale=seg_colors, legend=alt.Legend(title="Priority")),
-            tooltip=[
-                alt.Tooltip("deal_amount:Q", title="Deal Amount", format="$,.0f"),
-                alt.Tooltip("close_probability:Q", title="Close Probability", format=".1%"),
-                alt.Tooltip("priority:N", title="Priority"),
-                alt.Tooltip("stage:N", title="Stage"),
-            ],
+    st.markdown('<p class="section-header">Relationship Score vs Close Probability</p>', unsafe_allow_html=True)
+
+    if "relationship_score" in chart_open.columns:
+        scatter_data = chart_open[["relationship_score", "close_probability", "priority", "gift_type"]].copy()
+        scatter_data["relationship_score"] = scatter_data["relationship_score"].astype(float)
+        scatter_data["close_probability"]  = scatter_data["close_probability"].astype(float)
+        sampled = scatter_data.sample(min(1000, len(scatter_data)), random_state=42).reset_index(drop=True)
+
+        st.altair_chart(
+            alt.Chart(sampled)
+            .mark_circle(size=35, opacity=0.45)
+            .encode(
+                x=alt.X("relationship_score:Q", title="Relationship Score (1-10)"),
+                y=alt.Y("close_probability:Q", title="Close Probability",
+                         axis=alt.Axis(format=".0%")),
+                color=alt.Color("priority:N", scale=seg_colors, legend=alt.Legend(title="Priority")),
+                tooltip=[
+                    alt.Tooltip("relationship_score:Q", title="Relationship Score"),
+                    alt.Tooltip("close_probability:Q", title="Close Probability", format=".1%"),
+                    alt.Tooltip("priority:N", title="Priority"),
+                    alt.Tooltip("gift_type:N", title="Gift Type"),
+                ],
+            )
+            .properties(height=260),
+            use_container_width=True,
         )
-        .properties(height=260),
-        use_container_width=True,
-    )
+    else:
+        st.info("Regenerate data to see relationship score chart.")
 
 st.divider()
 
@@ -380,19 +407,9 @@ st.markdown(
 )
 st.caption("Contacting top-scored opportunities finds winners faster — here's how much faster.")
 
-# Re-score closed opps for lift chart
-for col in cat_cols:
-    if col in encoders and col in closed.columns:
-        le    = encoders[col]
-        known = set(le.classes_)
-        closed[col + "_enc"] = (
-            closed[col].astype(str)
-            .apply(lambda x: le.transform([x])[0] if x in known else 0)
-        )
-
-X_closed = closed[feature_cols]
+X_closed = closed[[f for f in feature_cols if f in closed.columns]]
 closed_scored = closed.copy()
-closed_scored["close_probability"] = model.predict_proba(X_closed)[:, 1]
+closed_scored["close_probability"] = model_pipeline.predict_proba(X_closed)[:, 1]
 
 lift_df = closed_scored[["close_probability", "is_successful"]].copy()
 lift_df = lift_df.sort_values("close_probability", ascending=False).reset_index(drop=True)
@@ -462,38 +479,42 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-show_cols = [
-    "opportunity_id", "donor_id", "stage", "gift_type",
-    "deal_amount", "stage_probability_pct", "close_probability",
-    "priority", "stage_entry_date", "fiscal_year", "fiscal_quarter",
-]
+base_show = ["opportunity_id", "donor_id", "stage", "gift_type",
+             "deal_amount", "close_probability", "priority",
+             "stage_entry_date", "fiscal_year", "fiscal_quarter"]
+extra_show = [c for c in ["relationship_score", "days_in_stage", "capacity_band"]
+              if c in display_df.columns]
+show_cols = base_show + extra_show
+
+col_config = {
+    "opportunity_id":     st.column_config.TextColumn("Opportunity ID"),
+    "donor_id":           st.column_config.TextColumn("Donor ID"),
+    "stage":              st.column_config.TextColumn("Stage"),
+    "gift_type":          st.column_config.TextColumn("Gift Type"),
+    "deal_amount":        st.column_config.NumberColumn("Deal Amount", format="$%,.0f"),
+    "close_probability":  st.column_config.ProgressColumn(
+        "Close Probability", min_value=0, max_value=1, format="%.2f",
+    ),
+    "priority":           st.column_config.TextColumn("Priority"),
+    "stage_entry_date":   st.column_config.TextColumn("Stage Entry Date"),
+    "fiscal_year":        st.column_config.NumberColumn("FY", format="%d"),
+    "fiscal_quarter":     st.column_config.NumberColumn("Q",  format="%d"),
+    "relationship_score": st.column_config.NumberColumn("Rel. Score", format="%.1f"),
+    "days_in_stage":      st.column_config.NumberColumn("Days in Stage"),
+    "capacity_band":      st.column_config.TextColumn("Capacity"),
+}
 
 st.dataframe(
-    to_display(display_df[show_cols]),
+    to_display(display_df[[c for c in show_cols if c in display_df.columns]]),
     use_container_width=True,
     height=350,
     hide_index=True,
-    column_config={
-        "opportunity_id":        st.column_config.TextColumn("Opportunity ID"),
-        "donor_id":              st.column_config.TextColumn("Donor ID"),
-        "stage":                 st.column_config.TextColumn("Stage"),
-        "gift_type":             st.column_config.TextColumn("Gift Type"),
-        "deal_amount":           st.column_config.NumberColumn("Deal Amount", format="$%,.0f"),
-        "stage_probability_pct": st.column_config.NumberColumn("Stage %", format="%d%%"),
-        "close_probability":     st.column_config.ProgressColumn(
-            "Close Probability", min_value=0, max_value=1, format="%.2f",
-        ),
-        "priority":              st.column_config.TextColumn("Priority"),
-        "stage_entry_date":      st.column_config.TextColumn("Stage Entry Date"),
-        "fiscal_year":           st.column_config.NumberColumn("FY", format="%d"),
-        "fiscal_quarter":        st.column_config.NumberColumn("Q",  format="%d"),
-    },
+    column_config=col_config,
 )
 
 st.divider()
 
-# ── Download ──────────────────────────────────────────────────────────────────
-csv = display_df[show_cols].to_csv(index=False).encode("utf-8")
+csv = display_df[[c for c in show_cols if c in display_df.columns]].to_csv(index=False).encode("utf-8")
 st.download_button(
     label="⬇️ Download opportunities",
     data=csv,

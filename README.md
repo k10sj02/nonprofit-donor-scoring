@@ -13,7 +13,7 @@ This project combines exploratory data analysis with a machine learning propensi
 ## Features
 
 - Merges donation transaction records with donor profile data
-- Engineers 20+ features: RFM, giving behaviour flags, engagement signals, and donor demographics
+- Engineers RFM and donor profile features from transaction history
 - Trains a **Random Forest classifier** with time-based train/test split to predict donor retention
 - Segments donors into **four propensity tiers**: High / Medium / Low / Very Low
 - Evaluates model quality with ROC-AUC, PR-AUC, and Recall@K metrics
@@ -94,28 +94,80 @@ Optional fields (enrich model features if present): `donation_type`, `age_group`
 ## How the Model Works
 
 1. **Time-based split** — donations are split at the 80th percentile by date. Features are built from the earlier 80%; the later 20% defines the target (did the donor give again?).
-2. **Feature engineering** — 20+ per-donor features computed from the training window including RFM metrics, giving behaviour flags, engagement signals, and donor profile attributes.
+2. **Feature engineering** — per-donor features computed from the training window including RFM metrics, giving behaviour flags, and donor profile attributes.
 3. **Model** — a Random Forest classifier (`class_weight="balanced_subsample"`) is trained to predict `donated_again`. Handles class imbalance and nonlinear feature interactions natively.
 4. **Evaluation** — ROC-AUC, PR-AUC, and Recall@K are computed on the held-out test set. Permutation importance identifies the top predictive signals.
 5. **Scoring** — all donors are scored with `predict_proba` and segmented into four percentile-based tiers.
 
 ---
 
-## Streamlit App
+## Model Results
 
-**Upload & Map** (`0_Upload_and_Map.py`)
-- Upload any donation CSV
-- Auto-detect and map column names
-- Validate date formats, numeric fields, and required columns
-- Preview transformed data before proceeding
+The following results were produced on the included synthetic dataset (7,370 donors, June 2023 – June 2025).
 
-**Donor Propensity** (`1_Donor_Propensity.py`)
-- KPI metrics: total donors, high propensity %, ROC-AUC, PR-AUC, retention rate
-- Score distribution, retention rate by tier, giving frequency, recency vs gift size
-- Model lift chart vs random selection with Recall@K metrics
-- Permutation feature importance
-- Donor leaderboard with propensity score progress bar
-- Segment filter and CSV export
+| Metric | Value | What it means |
+|---|---|---|
+| ROC-AUC | **0.87** | Strong overall ranking quality. 0.5 = random, 1.0 = perfect. |
+| PR-AUC | **0.51** | Precision-recall quality on an imbalanced target (12.4% retention rate). |
+| Recall @ top 10% | **26.4%** | Contacting 10% of donors finds 26% of all retained donors. |
+| Recall @ top 20% | **54.2%** | Contacting 20% of donors finds 54% of all retained donors. |
+| Lift at top 33% | **2.5x** | Contacting the top third finds 2.5x more retained donors than random selection. |
+| Retained captured (top 33%) | **84.1%** | 84% of all retained donors are found within the top-scored third. |
+
+### Feature Importance
+
+Permutation importance ranked the top predictive signals (measured as PR-AUC drop when feature is shuffled):
+
+| Rank | Feature | What it captures |
+|---|---|---|
+| 1 | `donation_count` | Total number of gifts — more gifts = stronger habit |
+| 2 | `stage_score` | Log of donation count — cultivation depth proxy |
+| 3 | `days_since_first` | Donor tenure — longer relationship = more loyal |
+| 4 | `amount_log` | Log total donated — monetary engagement |
+| 5 | `gift_100_lifetime` | Ever made a gift ≥ $100 — capacity signal |
+| 6 | `age_30-49` | Age group — mid-career donors retain more |
+| 7 | `giving_frequency_ratio` | Gifts per active day — engagement intensity |
+| 8 | `age_50-65` | Age group — pre-retirement donors retain well |
+| 9 | `avg_donation_log` | Average gift size — giving level signal |
+| 10 | `newsletter_opt_in` | Newsletter subscription — engagement signal |
+
+The model confirms what experienced fundraisers know intuitively: **frequency and tenure are the strongest predictors of future giving**. Donors who have given multiple times over a long period are far more likely to give again than one-time or lapsed donors.
+
+---
+
+## How to Interpret the Dashboard
+
+### Propensity Tiers
+
+Donors are segmented into four tiers based on their percentile score:
+
+| Tier | Percentile | Recommended action |
+|---|---|---|
+| 🟢 **High** | Top 20% | Priority outreach — contact first, highest ROI |
+| 🟡 **Medium** | 60th–80th percentile | Nurture — newsletters, soft asks, impact updates |
+| 🟠 **Low** | 40th–60th percentile | Monitor — low-cost periodic engagement only |
+| 🔴 **Very Low** | Bottom 40% | Deprioritize — consider re-engagement campaigns or exclude |
+
+### Reading the Charts
+
+**Score Distribution** — shows how propensity scores are distributed across your donor base. A healthy model produces a spread of scores rather than a spike at one end. Most donors will cluster at lower scores since retention is inherently rare.
+
+**Who Comes Back?** — retention rate per tier. High should always be meaningfully above Very Low. A large gap confirms the model is discriminating well. If all tiers show similar retention rates, the model has low signal.
+
+**Giving Frequency** — most donors give once. The drop-off between 1-gift and 2-gift donors is the most important pattern — converting one-time donors to repeat givers is the core retention challenge.
+
+**Recency vs Gift Size** — donors who gave recently tend to give smaller, more frequent amounts. Lapsed donors with high average gifts (top-right cluster) are the highest-value re-engagement targets regardless of their propensity tier.
+
+**Model vs Random (Lift Chart)** — the green line shows how many retained donors you capture by contacting the top X% of scored donors. The grey dashed line is random selection. The gap between the two is your operational leverage. A 2.5x lift at 33% means contacting the top third of your list finds 2.5x more retained donors than picking randomly.
+
+**Feature Importance** — which features caused the biggest drop in model performance when shuffled. Longer bars = more important. Use this to understand what your data is telling you: if `donation_count` dominates, frequency is your best retention signal. If `recency_days` dominates, lapsed donors are the key risk.
+
+### Suggested Next Steps
+
+1. **Export the High tier list** and pass to your outreach team for immediate action
+2. **Filter to Medium donors** with high total donated — these are upgrade candidates worth a personalized ask
+3. **Review the Very Low tier** — these donors may be worth a low-cost re-engagement campaign (e.g. impact report) before being archived
+4. **Re-run monthly** as new donation data comes in — propensity scores shift as donor behaviour changes
 
 ---
 

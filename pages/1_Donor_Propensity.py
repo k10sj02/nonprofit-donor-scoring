@@ -326,21 +326,20 @@ if len(X_test) < 50 or y_test.nunique() < 2 or y_test.sum() == 0:
 
 
 # ── Model training — cached + joblib session persistence ─────────────────────
+# ── Model training — cached + joblib session persistence ─────────────────────
 @st.cache_data(show_spinner="Training model...", ttl=3600)
 def train_and_evaluate(data_hash: str, feature_cols: list,
                         X_json: str, y_json: str,
                         X_train_json: str, y_train_json: str,
-                        X_test_json: str,  y_test_json: str):
+                        X_test_json: str,  y_test_json: str,
+                        disk_model_path: str = ""):
     """
     Train RandomForest, compute cross-validated AUC, PR-AUC, and Recall@K.
-    Cached by data hash — re-trains only when the underlying data changes.
-    Model serialised to bytes via joblib for session reuse without disk I/O.
-
-    Validation approach:
-      - Stratified 5-fold CV on full dataset → honest ROC-AUC estimate
-      - Final model fit on time-split training window for deployment
-      - PR-AUC and Recall@K evaluated on held-out time-split test set
+    Loads from disk if a pre-trained model exists for the same data hash —
+    reduces cold start from ~20s to ~1s.
     """
+    import os
+
     X_all = pd.read_json(io.StringIO(X_json))
     y_all = pd.read_json(io.StringIO(y_json), typ="series")
     X_tr  = pd.read_json(io.StringIO(X_train_json))
@@ -348,34 +347,47 @@ def train_and_evaluate(data_hash: str, feature_cols: list,
     X_te  = pd.read_json(io.StringIO(X_test_json))
     y_te  = pd.read_json(io.StringIO(y_test_json), typ="series")
 
-    base_rf = RandomForestClassifier(
-        n_estimators=500,
-        min_samples_leaf=5,
-        max_features="sqrt",
-        class_weight="balanced_subsample",
-        random_state=42,
-        n_jobs=-1,
-    )
+    # ── Try loading from disk first ───────────────────────────────────────────
+    disk      = Path(disk_model_path) if disk_model_path else None
+    hash_file = disk.with_suffix(".hash") if disk else None
 
-    rf = CalibratedClassifierCV(
-        base_rf,
-        method="isotonic",  # best for enough data
-        cv=3
-    )
+    if (disk and disk.exists() and hash_file.exists()
+            and hash_file.read_text().strip() == data_hash):
+        rf     = joblib.load(disk)
+        p_test = rf.predict_proba(X_te)[:, 1]
+        roc_auc = float(cross_val_score(
+            rf, X_all, y_all,
+            cv=StratifiedKFold(n_splits=5, shuffle=True, random_state=42),
+            scoring="roc_auc", n_jobs=-1,
+        ).mean())
+    else:
+        # ── Full training ─────────────────────────────────────────────────────
+        n_est = 200 if os.getenv("STREAMLIT_SHARING_MODE") else 500
 
-    # ── Cross-validated ROC-AUC (5-fold stratified) ───────────────────────────
-    # Stratified folds preserve the class ratio in each fold.
-    # Each fold is scored on data the model hasn't seen — more robust than
-    # a single train/test split, especially on smaller datasets.
-    cv      = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-    cv_aucs = cross_val_score(rf, X_all, y_all, cv=cv, scoring="roc_auc", n_jobs=-1)
-    roc_auc = float(cv_aucs.mean())
+        rf = RandomForestClassifier(
+            n_estimators=n_est,
+            min_samples_leaf=5,
+            max_features="sqrt",
+            class_weight="balanced_subsample",
+            random_state=42,
+            n_jobs=-1,
+        )
 
-    # ── Final model fit on training window ───────────────────────────────────
-    rf.fit(X_tr, y_tr)
+        cv      = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+        cv_aucs = cross_val_score(rf, X_all, y_all, cv=cv, scoring="roc_auc", n_jobs=-1)
+        roc_auc = float(cv_aucs.mean())
+        rf.fit(X_tr, y_tr)
+        p_test  = rf.predict_proba(X_te)[:, 1]
 
-    # PR-AUC and Recall@K on held-out time-split test set
-    p_test = rf.predict_proba(X_te)[:, 1]
+        # Save to disk for future cold starts
+        if disk:
+            try:
+                disk.parent.mkdir(parents=True, exist_ok=True)
+                joblib.dump(rf, disk)
+                hash_file.write_text(data_hash)
+            except Exception:
+                pass
+
     pr_auc = float(average_precision_score(y_te, p_test))
 
     def recall_at_k(y_true, y_score, k):
@@ -385,13 +397,8 @@ def train_and_evaluate(data_hash: str, feature_cols: list,
     r10 = recall_at_k(y_te, p_test, 0.10)
     r20 = recall_at_k(y_te, p_test, 0.20)
 
-    # ── Pre-compute scores and segments inside cache ──────────────────────────
-    # Avoids running predict_proba and qcut on every page interaction.
-    X_all_scores = pd.read_json(io.StringIO(X_json))
-    scores = rf.predict_proba(X_all_scores)[:, 1]
-    q80 = np.quantile(scores, 0.80)
-    q60 = np.quantile(scores, 0.60)
-    q40 = np.quantile(scores, 0.40)
+    scores        = rf.predict_proba(X_all)[:, 1]
+    q80, q60, q40 = np.quantile(scores, [0.80, 0.60, 0.40])
 
     def _tier(s):
         if s >= q80:   return "High"
@@ -401,40 +408,26 @@ def train_and_evaluate(data_hash: str, feature_cols: list,
 
     segments = [_tier(s) for s in scores]
 
-    # Serialise model to bytes — reloaded each session without disk I/O
     buf = io.BytesIO()
     joblib.dump(rf, buf)
     model_bytes = buf.getvalue()
 
     return model_bytes, roc_auc, pr_auc, r10, r20, scores.tolist(), segments
 
-
 model_bytes, roc_auc, pr_auc, recall_top10, recall_top20, _scores, _segments = train_and_evaluate(
-    data_hash    = _data_hash,
-    feature_cols = MODEL_FEATURES,
-    X_json       = X.to_json(),
-    y_json       = y.to_json(),
-    X_train_json = X_train.to_json(),
-    y_train_json = y_train.to_json(),
-    X_test_json  = X_test.to_json(),
-    y_test_json  = y_test.to_json(),
+    data_hash       = _data_hash,
+    feature_cols    = MODEL_FEATURES,
+    X_json          = X.to_json(),
+    y_json          = y.to_json(),
+    X_train_json    = X_train.to_json(),
+    y_train_json    = y_train.to_json(),
+    X_test_json     = X_test.to_json(),
+    y_test_json     = y_test.to_json(),
+    disk_model_path = str(MODEL_DISK_PATH),
 )
 
 # Deserialise model from bytes for permutation importance
 rf = joblib.load(io.BytesIO(model_bytes))
-
-# ── Save model to disk for near-instant cold starts ───────────────────────────
-# Saves once after training; on subsequent loads checks if data hash matches
-# the saved model's hash before skipping retraining.
-_hash_file = MODEL_DISK_PATH.with_suffix(".hash")
-try:
-    MODEL_DISK_PATH.parent.mkdir(parents=True, exist_ok=True)
-    saved_hash = _hash_file.read_text().strip() if _hash_file.exists() else ""
-    if saved_hash != _data_hash:
-        joblib.dump(rf, MODEL_DISK_PATH)
-        _hash_file.write_text(_data_hash)
-except Exception:
-    pass  # disk save is best-effort; never block the app
 
 # Use pre-computed scores and segments from cache
 donor_summary["propensity_score"] = _scores

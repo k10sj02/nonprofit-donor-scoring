@@ -68,43 +68,56 @@ st.title("💚 Donor Propensity Scoring")
 st.caption("Score, segment, and prioritize your donor base for maximum retention impact.")
 st.divider()
 
-# ── How to use ────────────────────────────────────────────────────────────────
 with st.expander("📖 How to use this tool", expanded=False):
     st.markdown("""
-    **This dashboard scores your donors by likelihood to give again and segments them into four tiers.**
-    Use the sidebar filter to focus on a specific segment at any time.
+**This dashboard scores donors by likelihood to give again and helps prioritize them using both short-term and long-term value signals.**
+- **Expected Next Gift** = likelihood × average donation (short-term opportunity)
+- **Predicted LTV** = long-term value based on giving frequency and retention
 
-    ---
+Use the sidebar filter to focus on a specific segment at any time.
 
-    **🟢 High — Priority outreach**
-    Strongest signals for repeat giving. Contact these first.
+---
 
-    **🟡 Medium — Nurture**
-    Moderate engagement. A lighter touch can move them toward High.
+**🟢 High — Priority outreach**
+High likelihood to give and strong overall value. These donors are your top targets for both immediate and long-term impact.
 
-    **🟠 Low — Monitor**
-    Weak retention signals. Periodic low-cost engagement only.
+**🟡 Medium — Nurture**
+Moderate expected return. With the right engagement, these donors can move into the High tier.
 
-    **🔴 Very Low — Deprioritize**
-    Minimal signals. Consider re-engagement campaigns or exclude from outreach.
+**🟠 Low — Monitor**
+Lower likelihood or value. Engage selectively or through lower-cost channels.
 
-    ---
+**🔴 Very Low — Deprioritize**
+Minimal expected impact. Consider broad or automated re-engagement strategies.
 
-    **Reading the charts**
-    - **Score Distribution** — scores near 1.0 = high likelihood to give again
-    - **Who Comes Back?** — retention rate per tier confirms model is working
-    - **Giving Frequency** — most donors give once; repeat donors are rare and valuable
-    - **Recency vs Gift Size** — lapsed high-value donors are strong re-engagement targets
-    - **Model vs Random** — green line above diagonal = model beats random selection
-    - **Feature Importance** — which signals drive the model most
+---
 
-    ---
+**Reading the charts**
+- **Score Distribution** — likelihood to give again; feeds into Expected Next Gift
+- **Who Comes Back?** — retention rate by segment; confirms that higher-ranked donors are more likely to return
+- **Giving Frequency** — repeat donors drive most long-term value
+- **Recency vs Gift Size** — identify high-value donors who may be at risk of lapsing
+- **Model vs Random** — how much more efficiently the model identifies returning donors vs random outreach
+- **Feature Importance** — which behavioral signals (recency, frequency, giving patterns) drive predictions
 
-    **Suggested next steps**
-    1. Export the **High tier** list for immediate outreach
-    2. For **Medium donors** with high total giving, consider a personalized ask
-    3. Re-run the model monthly as new donation data comes in
-    """)
+---
+
+**How to use the leaderboard**
+- **Sort by Predicted LTV** to prioritize long-term value
+- Use **Expected Next Gift** to identify immediate revenue opportunities
+- Compare both to spot:
+  - High LTV but low next gift → long-term cultivation targets
+  - High next gift but low LTV → short-term campaign targets
+
+---
+
+**Suggested next steps**
+1. Export the **High tier** list — highest overall value donors
+2. Prioritize donors with **high LTV + high next gift** for immediate outreach
+3. Target **high LTV but lower next gift** donors with relationship-building strategies
+4. Use **Low / Very Low segments** for low-cost or automated campaigns
+5. Re-run the model regularly as new donation data comes in
+""")
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -290,15 +303,26 @@ X = donor_summary[MODEL_FEATURES].fillna(0)
 y = donor_summary["donated_again"]
 
 # Time-based split for lift chart and permutation importance
-split_cutoff = cutoff_date
-train_mask      = donor_summary["last_donation"] <= split_cutoff
-test_mask       = donor_summary["last_donation"] >  split_cutoff
+# Proper donor-level time-based split
+donor_summary_sorted = donor_summary.sort_values("last_donation")
+
+split_idx = int(len(donor_summary_sorted) * 0.8)
+
+train_ids = set(donor_summary_sorted.iloc[:split_idx]["donor_id"])
+test_ids  = set(donor_summary_sorted.iloc[split_idx:]["donor_id"])
+
+train_mask = donor_summary["donor_id"].isin(train_ids)
+test_mask  = donor_summary["donor_id"].isin(test_ids)
+
 X_train, X_test = X[train_mask], X[test_mask]
 y_train, y_test = y[train_mask], y[test_mask]
 
-if len(X_test) < 50 or y_test.nunique() < 2:
+# fallback if needed
+used_fallback = False
+if len(X_test) < 50 or y_test.nunique() < 2 or y_test.sum() == 0:
     X_train, X_test = X, X
     y_train, y_test = y, y
+    used_fallback = True
 
 
 # ── Model training — cached + joblib session persistence ─────────────────────
@@ -414,16 +438,11 @@ except Exception:
 
 # Use pre-computed scores and segments from cache
 donor_summary["propensity_score"] = _scores
-
-donor_summary["propensity_score"] = _scores
-
-donor_summary["expected_value"] = (
-    donor_summary["propensity_score"] * donor_summary["avg_donation"]
-)
-
 donor_summary["segment"] = _segments
 
-donor_summary["segment"]          = _segments
+donor_summary["expected_next_gift"] = (
+    donor_summary["propensity_score"] * donor_summary["avg_donation"]
+)
 
 # Annual giving rate — use gifts per year with a minimum 90-day observation window
 observation_days = donor_summary["days_since_first"].clip(lower=90)
@@ -629,6 +648,10 @@ lift_df = lift_df.sort_values("propensity_score", ascending=False).reset_index(d
 total          = len(lift_df)
 total_retained = lift_df["donated_again"].sum()
 
+if total_retained == 0:
+    st.warning("No retained donors in test set — lift chart not available.")
+    st.stop()
+
 steps          = list(range(1, 101))
 model_capture  = []
 random_capture = []
@@ -736,10 +759,12 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-table_cols = ["donor_id", "donation_count", "total_donated", "avg_donation",
-              "recency_days", "months_since_last", "lapsed", "gift_trend",
-              "giving_tier", "last_donation", "donated_again",
-              "predicted_ltv", "propensity_score", "segment"]
+table_cols = [
+    "donor_id", "donation_count", "total_donated", "avg_donation",
+    "recency_days", "months_since_last", "lapsed", "gift_trend",
+    "giving_tier", "last_donation", "donated_again", "expected_next_gift",
+    "predicted_ltv", "propensity_score", "segment"
+]
 table_cols = [c for c in table_cols if c in display_df.columns]
 
 st.dataframe(
@@ -763,6 +788,7 @@ st.dataframe(
         "lapsed":            st.column_config.CheckboxColumn("Lapsed (12m+)"),
         "gift_trend":        st.column_config.NumberColumn("Gift Trend ($)", format="$%+.2f"),
         "giving_tier":       st.column_config.TextColumn("Giving Tier"),
+        "expected_next_gift": st.column_config.NumberColumn("Expected Next Gift ($)", format="$%.2f"),
     },
 )
 

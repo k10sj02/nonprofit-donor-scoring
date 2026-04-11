@@ -6,7 +6,7 @@ Lightweight donor lifecycle and propensity analysis focused on retention and rec
 
 ## Overview
 
-This project combines exploratory data analysis with a machine learning propensity model to help nonprofit fundraising teams identify which donors are most likely to give again. It includes a Jupyter notebook for data preparation and analysis, and a multi-page Streamlit app for interactive scoring and segmentation.
+This project combines exploratory data analysis with a machine learning propensity model to help nonprofit fundraising teams identify which donors are most likely to give again and estimate their short-term and long-term value. It includes a Jupyter notebook for data preparation and analysis, and a multi-page Streamlit app for interactive scoring and segmentation.
 
 ---
 
@@ -130,6 +130,9 @@ Features marked as optional (`newsletter_opt_in`, `ref_*`, `age_*`) are only inc
 4. **Validation** — ROC-AUC is reported as the mean of 5-fold stratified cross-validation on the full dataset, which is more robust than a single train/test split. PR-AUC and Recall@K are computed on the held-out time-split test set.
 5. **Scoring** — all donors are scored with `predict_proba` and segmented into four percentile-based tiers (High / Medium / Low / Very Low).
 6. **Performance** — the model is cached with `st.cache_data` and serialised with `joblib` for session reuse, so it only retrains when the underlying data changes.
+7. **Value metrics**
+   - **Expected Next Gift** = propensity score × average donation — short-term expected revenue from the next interaction
+   - **Predicted LTV** = annual giving rate × expected lifespan — long-term donor value estimate
 
 ---
 
@@ -140,11 +143,11 @@ The following results were produced on the included synthetic dataset (7,370 don
 | Metric | Value | What it means |
 |---|---|---|
 | ROC-AUC | **0.86** | Strong overall ranking quality. 0.5 = random, 1.0 = perfect. |
-| PR-AUC | **0.51** | Precision-recall quality on an imbalanced target (12.4% retention rate). |
-| Recall @ top 10% | **24.4%** | Contacting 10% of donors finds 24% of all retained donors. |
-| Recall @ top 20% | **51.5%** | Contacting 20% of donors finds 52% of all retained donors. |
-| Lift at top 33% | **2.5x** | Contacting the top third finds 2.5x more retained donors than random selection. |
-| Retained captured (top 33%) | **84.1%** | 84% of all retained donors are found within the top-scored third. |
+| PR-AUC | **0.50** | Precision-recall quality on an imbalanced target (12.4% retention rate). |
+| Recall @ top 10% | **24.7%** | Contacting 10% of donors finds 25% of all retained donors. |
+| Recall @ top 20% | **53.2%** | Contacting 20% of donors finds 53% of all retained donors. |
+| Lift at top 33% | **2.6x** | Contacting the top third finds 2.6x more retained donors than random selection. |
+| Retained captured (top 33%) | **85.8%** | 86% of all retained donors are found within the top-scored third. |
 
 ### Feature Importance
 
@@ -169,16 +172,19 @@ The model confirms what experienced fundraisers know intuitively: **frequency an
 
 ## How to Interpret the Dashboard
 
-### Propensity Tiers
+### Prioritizing Donors
 
-Donors are segmented into four tiers based on their percentile score:
+The model provides two complementary signals:
 
-| Tier | Percentile | Recommended action |
-|---|---|---|
-| 🟢 **High** | Top 20% | Priority outreach — contact first, highest ROI |
-| 🟡 **Medium** | 60th–80th percentile | Nurture — newsletters, soft asks, impact updates |
-| 🟠 **Low** | 40th–60th percentile | Monitor — low-cost periodic engagement only |
-| 🔴 **Very Low** | Bottom 40% | Deprioritize — consider re-engagement campaigns or exclude |
+- **Expected Next Gift** — best for short-term campaign prioritization
+- **Predicted LTV** — best for long-term relationship building
+
+Use both together:
+
+- High LTV + High Next Gift → **Top priority donors**
+- High LTV + Low Next Gift → **Cultivation targets**
+- Low LTV + High Next Gift → **Short-term campaign opportunities**
+- Low LTV + Low Next Gift → **Low priority**
 
 ### Reading the Charts
 
@@ -196,10 +202,20 @@ Donors are segmented into four tiers based on their percentile score:
 
 ### Suggested Next Steps
 
-1. **Export the High tier list** and pass to your outreach team for immediate action
-2. **Filter to Medium donors** with high total donated — these are upgrade candidates worth a personalized ask
-3. **Review the Very Low tier** — these donors may be worth a low-cost re-engagement campaign (e.g. impact report) before being archived
-4. **Re-run monthly** as new donation data comes in — propensity scores shift as donor behaviour changes
+1. Sort donors by **Predicted LTV** to prioritize long-term value
+2. Identify donors with high **Expected Next Gift** for immediate campaigns
+3. Focus on donors with **high LTV but lower short-term likelihood** for relationship-building strategies
+4. Use **Low / Very Low segments** for low-cost or automated outreach
+5. Re-run monthly as new donation data comes in
+
+## Decision Framework
+
+This tool is designed to support two core fundraising decisions:
+
+- **Who should we contact now?** → prioritize by Expected Next Gift
+- **Who should we invest in long-term?** → prioritize by Predicted LTV
+
+By combining both signals, teams can balance immediate revenue with long-term donor development.
 
 ---
 

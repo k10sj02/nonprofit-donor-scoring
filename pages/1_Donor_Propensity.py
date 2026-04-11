@@ -420,6 +420,11 @@ donor_summary["predicted_ev"] = (
 
 # ── Apply segment filter ──────────────────────────────────────────────────────
 if segment_filter != "All":
+    chart_df = donor_summary[donor_summary["segment"] == segment_filter].copy()
+else:
+    chart_df = donor_summary.copy()
+
+total_donors = len(donor_summary)
 
 # ── KPIs ──────────────────────────────────────────────────────────────────────
 total_donors = len(donor_summary)

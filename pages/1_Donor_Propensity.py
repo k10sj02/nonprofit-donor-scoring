@@ -426,6 +426,24 @@ donor_summary["predicted_ltv"] = (
     donor_summary["annual_giving_rate"] * donor_summary["expected_lifespan_yrs"]
 ).round(2)
 
+# Giving tier — donor pyramid segmentation
+def giving_tier(total):
+    if total >= 1000:  return "Major"
+    elif total >= 250: return "Mid-level"
+    else:              return "Small"
+
+donor_summary["giving_tier"] = donor_summary["total_donated"].apply(giving_tier)
+
+# Lapsed flag — high-value re-engagement targets
+donor_summary["lapsed"] = (donor_summary["recency_days"] > 365).astype(int)
+
+# Gift trend — is the donor growing or declining?
+first_gifts = train_df.sort_values("donation_date").groupby("donor_id")["donation_amount"].first()
+last_gifts  = train_df.sort_values("donation_date").groupby("donor_id")["donation_amount"].last()
+donor_summary["gift_trend"] = (
+    donor_summary["donor_id"].map(last_gifts - first_gifts).round(2)
+)
+
 # ── Apply segment filter ──────────────────────────────────────────────────────
 if segment_filter != "All":
     chart_df = donor_summary[donor_summary["segment"] == segment_filter].copy()
@@ -700,7 +718,8 @@ st.markdown(
 )
 
 table_cols = ["donor_id", "donation_count", "total_donated", "avg_donation",
-              "recency_days", "last_donation", "donated_again",
+              "recency_days", "months_since_last", "lapsed", "gift_trend",
+              "giving_tier", "last_donation", "donated_again",
               "predicted_ltv", "propensity_score", "segment"]
 table_cols = [c for c in table_cols if c in display_df.columns]
 
@@ -721,6 +740,10 @@ st.dataframe(
             "Propensity Score", min_value=0, max_value=1, format="%.2f"),
         "segment":          st.column_config.TextColumn("Segment"),
         "predicted_ltv": st.column_config.NumberColumn("Expected LTV ($)", format="$%.2f"),
+        "months_since_last": st.column_config.NumberColumn("Months Since Last Gift", format="%.1f"),
+        "lapsed":            st.column_config.CheckboxColumn("Lapsed (12m+)"),
+        "gift_trend":        st.column_config.NumberColumn("Gift Trend ($)", format="$%+.2f"),
+        "giving_tier":       st.column_config.TextColumn("Giving Tier"),
     },
 )
 

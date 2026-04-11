@@ -26,6 +26,7 @@ import pandas as pd
 import numpy as np
 import altair as alt
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.model_selection import StratifiedKFold, cross_val_score
 from sklearn.metrics import average_precision_score
 from sklearn.inspection import permutation_importance
@@ -289,7 +290,7 @@ X = donor_summary[MODEL_FEATURES].fillna(0)
 y = donor_summary["donated_again"]
 
 # Time-based split for lift chart and permutation importance
-split_cutoff    = donor_summary["last_donation"].quantile(0.8)
+split_cutoff = cutoff_date
 train_mask      = donor_summary["last_donation"] <= split_cutoff
 test_mask       = donor_summary["last_donation"] >  split_cutoff
 X_train, X_test = X[train_mask], X[test_mask]
@@ -323,13 +324,19 @@ def train_and_evaluate(data_hash: str, feature_cols: list,
     X_te  = pd.read_json(io.StringIO(X_test_json))
     y_te  = pd.read_json(io.StringIO(y_test_json), typ="series")
 
-    rf = RandomForestClassifier(
+    base_rf = RandomForestClassifier(
         n_estimators=500,
         min_samples_leaf=5,
         max_features="sqrt",
         class_weight="balanced_subsample",
         random_state=42,
         n_jobs=-1,
+    )
+
+    rf = CalibratedClassifierCV(
+        base_rf,
+        method="isotonic",  # best for enough data
+        cv=3
     )
 
     # ── Cross-validated ROC-AUC (5-fold stratified) ───────────────────────────
@@ -357,7 +364,7 @@ def train_and_evaluate(data_hash: str, feature_cols: list,
     # ── Pre-compute scores and segments inside cache ──────────────────────────
     # Avoids running predict_proba and qcut on every page interaction.
     X_all_scores = pd.read_json(io.StringIO(X_json))
-    scores       = rf.predict_proba(X_all_scores)[:, 1]
+    scores = rf.predict_proba(X_all_scores)[:, 1]
     q80 = np.quantile(scores, 0.80)
     q60 = np.quantile(scores, 0.60)
     q40 = np.quantile(scores, 0.40)
@@ -407,6 +414,15 @@ except Exception:
 
 # Use pre-computed scores and segments from cache
 donor_summary["propensity_score"] = _scores
+
+donor_summary["propensity_score"] = _scores
+
+donor_summary["expected_value"] = (
+    donor_summary["propensity_score"] * donor_summary["avg_donation"]
+)
+
+donor_summary["segment"] = _segments
+
 donor_summary["segment"]          = _segments
 
 # Annual giving rate — use gifts per year with a minimum 90-day observation window

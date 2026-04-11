@@ -409,13 +409,21 @@ except Exception:
 donor_summary["propensity_score"] = _scores
 donor_summary["segment"]          = _segments
 
-# ── Expected value = propensity × predicted next gift ─────────────────────────
-donor_summary["predicted_next_gift"] = (
-    donor_summary["avg_donation"] * 0.6 +
-    donor_summary["total_donated"] / donor_summary["donation_count"].clip(lower=1) * 0.4
+# Expected remaining lifespan in years, derived from retention probability
+# If a donor has p% chance of giving each year, expected years = p / (1 - p)
+# Clipped to avoid infinity when p is very high
+donor_summary["expected_lifespan_yrs"] = (
+    donor_summary["propensity_score"] / (1 - donor_summary["propensity_score"].clip(upper=0.99))
+).clip(upper=20)  # cap at 20 years — reasonable ceiling for any donor relationship
+
+# Annualised giving rate
+donor_summary["annual_giving_rate"] = (
+    donor_summary["avg_donation"] * donor_summary["giving_frequency_ratio"] * 365
 )
-donor_summary["predicted_ev"] = (
-    donor_summary["propensity_score"] * donor_summary["predicted_next_gift"]
+
+# Expected LTV
+donor_summary["predicted_ltv"] = (
+    donor_summary["annual_giving_rate"] * donor_summary["expected_lifespan_yrs"]
 ).round(2)
 
 # ── Apply segment filter ──────────────────────────────────────────────────────
@@ -683,7 +691,7 @@ st.altair_chart(imp_chart, use_container_width=True)
 st.divider()
 
 # ── Donor Leaderboard ─────────────────────────────────────────────────────────
-display_df = chart_df.sort_values("predicted_ev", ascending=False).reset_index(drop=True)
+display_df = chart_df.sort_values("predicted_ltv", ascending=False).reset_index(drop=True)
 
 st.markdown(
     f'<p class="section-header">Donor Leaderboard '
@@ -693,7 +701,7 @@ st.markdown(
 
 table_cols = ["donor_id", "donation_count", "total_donated", "avg_donation",
               "recency_days", "last_donation", "donated_again",
-              "predicted_ev", "propensity_score", "segment"]
+              "predicted_ltv", "propensity_score", "segment"]
 table_cols = [c for c in table_cols if c in display_df.columns]
 
 st.dataframe(
@@ -712,7 +720,7 @@ st.dataframe(
         "propensity_score": st.column_config.ProgressColumn(
             "Propensity Score", min_value=0, max_value=1, format="%.2f"),
         "segment":          st.column_config.TextColumn("Segment"),
-        "predicted_ev": st.column_config.NumberColumn("Expected Value ($)", format="$%.2f"),
+        "predicted_ltv": st.column_config.NumberColumn("Expected LTV ($)", format="$%.2f"),
     },
 )
 

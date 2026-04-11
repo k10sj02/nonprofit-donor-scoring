@@ -256,7 +256,7 @@ donor_summary = build_donor_features(train_df, cutoff_date)
 def cached_build_features(data_hash: str, train_json: str, cutoff_str: str,
                            future_donor_ids: list) -> pd.DataFrame:
     train  = pd.read_json(io.StringIO(train_json))
-    train["donation_date"] = pd.to_datetime(train["donation_date"])
+    train["donation_date"] = pd.to_datetime(train["donation_date"], unit="ms")
     cutoff = pd.Timestamp(cutoff_str)
     summary = build_donor_features(train, cutoff)
     summary["donated_again"] = summary["donor_id"].isin(future_donor_ids).astype(int)
@@ -409,19 +409,22 @@ except Exception:
 donor_summary["propensity_score"] = _scores
 donor_summary["segment"]          = _segments
 
-# Expected remaining lifespan in years, derived from retention probability
-# If a donor has p% chance of giving each year, expected years = p / (1 - p)
-# Clipped to avoid infinity when p is very high
-donor_summary["expected_lifespan_yrs"] = (
-    donor_summary["propensity_score"] / (1 - donor_summary["propensity_score"].clip(upper=0.99))
-).clip(upper=20)  # cap at 20 years — reasonable ceiling for any donor relationship
+# Annual giving rate — use gifts per year with a minimum 90-day observation window
+observation_days = donor_summary["days_since_first"].clip(lower=90)
+donor_summary["gifts_per_year"] = (
+    donor_summary["donation_count"] / observation_days * 365
+).clip(upper=12)  # cap at 12 gifts/year — monthly giving is the ceiling
 
-# Annualised giving rate
 donor_summary["annual_giving_rate"] = (
-    donor_summary["avg_donation"] * donor_summary["giving_frequency_ratio"] * 365
+    donor_summary["avg_donation"] * donor_summary["gifts_per_year"]
 )
 
-# Expected LTV
+donor_summary["expected_lifespan_yrs"] = (
+    donor_summary["propensity_score"] / (
+        1 - donor_summary["propensity_score"].clip(upper=0.99)
+    )
+).clip(upper=20)
+
 donor_summary["predicted_ltv"] = (
     donor_summary["annual_giving_rate"] * donor_summary["expected_lifespan_yrs"]
 ).round(2)

@@ -226,3 +226,5 @@ __pycache__/
 outputs/*
 !outputs/donations_clean.csv__pycache__/
 *.pyc
+outputs/donor_model.joblib
+outputs/donor_model.hash

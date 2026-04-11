@@ -91,13 +91,45 @@ Optional fields (enrich model features if present): `donation_type`, `age_group`
 
 ---
 
+## Target and Features
+
+### Target
+
+| Variable | Type | Definition |
+|---|---|---|
+| `donated_again` | Binary (0/1) | 1 if the donor made at least one donation after the 80th-percentile date cutoff (the "future window"); 0 otherwise |
+
+### Features
+
+| Feature | Type | Definition |
+|---|---|---|
+| `recency_days` | Numeric | Days since most recent donation — lower values indicate more recent engagement |
+| `donation_count` | Numeric | Total number of gifts made in the training window |
+| `amount_log` | Numeric | log1p(total donated) — log-transforms total giving to reduce right skew |
+| `avg_donation_log` | Numeric | log1p(average gift size) — log-transformed average gift |
+| `months_since_last` | Numeric | Recency expressed in months (recency_days / 30.44) |
+| `days_since_first` | Numeric | Donor tenure in days — longer tenure signals loyalty |
+| `giving_frequency_ratio` | Numeric | donation_count / days_active — gifts per day, measures engagement intensity |
+| `stage_score` | Numeric | log1p(donation_count) — proxy for cultivation depth; more gifts = further cultivated |
+| `gift_100_lifetime` | Binary (0/1) | 1 if any lifetime gift was $100 or more — capacity and commitment signal |
+| `first_gift_missing_flag` | Binary (0/1) | 1 if the first gift date is null — data quality indicator |
+| `never_donated_flag` | Binary (0/1) | Always 0 by construction — all donors in the dataset have given at least once |
+| `newsletter_opt_in` | Binary (0/1) | 1 if the donor is subscribed to the newsletter — engagement signal |
+| `ref_*` | Binary (0/1) | One-hot encoded referral channel (Website, Social Media, Newsletter, etc.) |
+| `age_*` | Binary (0/1) | One-hot encoded age group (18-29, 30-49, 50-65, 66-80) |
+
+Features marked as optional (`newsletter_opt_in`, `ref_*`, `age_*`) are only included when the uploaded dataset contains the corresponding columns (`newsletter_opt_in`, `referral_channel`, `age_group`). The model handles their absence gracefully.
+
+---
+
 ## How the Model Works
 
-1. **Time-based split** — donations are split at the 80th percentile by date. Features are built from the earlier 80%; the later 20% defines the target (did the donor give again?).
-2. **Feature engineering** — per-donor features computed from the training window including RFM metrics, giving behaviour flags, and donor profile attributes.
-3. **Model** — a Random Forest classifier (`class_weight="balanced_subsample"`) is trained to predict `donated_again`. Handles class imbalance and nonlinear feature interactions natively.
-4. **Evaluation** — ROC-AUC, PR-AUC, and Recall@K are computed on the held-out test set. Permutation importance identifies the top predictive signals.
-5. **Scoring** — all donors are scored with `predict_proba` and segmented into four percentile-based tiers.
+1. **Time-based split** — donations are split at the 80th percentile by date. Features are built from the earlier 80%; the later 20% defines the target (`donated_again`).
+2. **Feature engineering** — per-donor features are computed from the training window only to prevent leakage. See the Target and Features table above.
+3. **Model** — a Random Forest classifier (`n_estimators=500`, `class_weight="balanced_subsample"`) is trained to predict `donated_again`. Handles class imbalance and nonlinear feature interactions natively.
+4. **Validation** — ROC-AUC is reported as the mean of 5-fold stratified cross-validation on the full dataset, which is more robust than a single train/test split. PR-AUC and Recall@K are computed on the held-out time-split test set.
+5. **Scoring** — all donors are scored with `predict_proba` and segmented into four percentile-based tiers (High / Medium / Low / Very Low).
+6. **Performance** — the model is cached with `st.cache_data` and serialised with `joblib` for session reuse, so it only retrains when the underlying data changes.
 
 ---
 

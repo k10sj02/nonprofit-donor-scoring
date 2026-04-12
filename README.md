@@ -143,11 +143,11 @@ The following results were produced on the included synthetic dataset (7,370 don
 | Metric | Value | What it means |
 |---|---|---|
 | ROC-AUC | **0.86** | Strong overall ranking quality. 0.5 = random, 1.0 = perfect. |
-| PR-AUC | **0.50** | Precision-recall quality on an imbalanced target (12.4% retention rate). |
-| Recall @ top 10% | **24.7%** | Contacting 10% of donors finds 25% of all retained donors. |
-| Recall @ top 20% | **53.2%** | Contacting 20% of donors finds 53% of all retained donors. |
-| Lift at top 33% | **2.6x** | Contacting the top third finds 2.6x more retained donors than random selection. |
-| Retained captured (top 33%) | **85.8%** | 86% of all retained donors are found within the top-scored third. |
+| PR-AUC | **0.51** | Precision-recall quality on an imbalanced target (12.4% retention rate). |
+| Recall @ top 10% | **26.4%** | Contacting 10% of donors finds 26% of all retained donors. |
+| Recall @ top 20% | **54.6%** | Contacting 20% of donors finds 55% of all retained donors. |
+| Lift at top 33% | **2.5x** | Contacting the top third finds 2.5x more retained donors than random selection. |
+| Retained captured (top 33%) | **84.1%** | 84% of all retained donors are found within the top-scored third. |
 
 ### Feature Importance
 

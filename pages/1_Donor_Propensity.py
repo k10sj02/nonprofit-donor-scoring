@@ -19,17 +19,12 @@ Model logic:
 
 import hashlib
 import io
-import os
 import joblib
 import streamlit as st
 import pandas as pd
 import numpy as np
 import altair as alt
-from sklearn.ensemble import RandomForestClassifier
 from sklearn.calibration import CalibratedClassifierCV
-from sklearn.model_selection import StratifiedKFold, cross_val_score
-from sklearn.metrics import average_precision_score
-from sklearn.inspection import permutation_importance
 from pathlib import Path
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -156,278 +151,46 @@ if df is None:
     st.stop()
 
 # ── Data prep ─────────────────────────────────────────────────────────────────
-df["donation_date"] = pd.to_datetime(df["donation_date"])
+# Load pre-trained model artifact
+# Model is trained locally via train_donor_model.py and committed to the repo.
+# No training happens at runtime — mirrors the pattern in train_models.py.
+MODEL_ARTIFACT_PATH = PROJECT_ROOT / "outputs" / "donor_model.joblib"
 
-# Time-based split: train on earliest 80%, test on most recent 20%
-# The training window defines features; the future window defines the target.
+
+@st.cache_resource(show_spinner="Loading model…")
+def load_artifact(path: str):
+    p = Path(path)
+    if not p.exists():
+        return None
+    return joblib.load(p)
+
+
+artifact = load_artifact(str(MODEL_ARTIFACT_PATH))
+
+if artifact is None:
+    st.error(
+        "Model artifact not found. Run `uv run python train_donor_model.py` locally "
+        "and commit `outputs/donor_model.joblib` to the repo."
+    )
+    st.stop()
+
+# Unpack artifact
+donor_summary = artifact["donor_summary"].copy()
+_scores       = artifact["scores"]
+_segments     = artifact["segments"]
+roc_auc       = artifact["roc_auc"]
+pr_auc        = artifact["pr_auc"]
+recall_top10  = artifact["recall_top10"]
+recall_top20  = artifact["recall_top20"]
+imp_df        = artifact["imp_df"]
+test_mask     = pd.Series(artifact["test_mask"], index=donor_summary.index)
+rf            = artifact["model"]
+
+# Data prep for leaderboard display only (no training)
+df["donation_date"] = pd.to_datetime(df["donation_date"])
 cutoff_date = df["donation_date"].quantile(0.8)
 train_df    = df[df["donation_date"] <= cutoff_date]
-future_df   = df[df["donation_date"] >  cutoff_date]
 
-
-# ── Feature engineering ───────────────────────────────────────────────────────
-def build_donor_features(transactions: pd.DataFrame, ref_date: pd.Timestamp) -> pd.DataFrame:
-    """
-    Build per-donor features from transaction history.
-    All features are computed from the training window only to prevent leakage.
-
-    TARGET
-    ------
-    donated_again : binary (0/1)
-        1 if the donor made at least one donation after the 80th-percentile
-        date cutoff (the "future window"); 0 otherwise.
-
-    FEATURES
-    --------
-    RFM core:
-      recency_days           — days since most recent donation (lower = more recent)
-      donation_count         — total number of gifts in the training window
-      amount_log             — log1p(total donated) — reduces right skew
-      avg_donation_log       — log1p(average gift size)
-      months_since_last      — recency expressed in months
-      days_since_first       — donor tenure in days (longer = more loyal)
-      giving_frequency_ratio — donation_count / days_active (gifts per day)
-
-    Giving behaviour flags:
-      gift_100_lifetime       — 1 if any lifetime gift >= $100 (capacity signal)
-      first_gift_missing_flag — 1 if first gift date is null
-      never_donated_flag      — always 0 here (all rows have donated by definition)
-
-    Pipeline proxy:
-      stage_score             — log1p(donation_count); proxy for cultivation depth
-
-    Engagement / profile (when columns present in uploaded data):
-      newsletter_opt_in       — 1 if donor is subscribed to newsletter
-      ref_*                   — one-hot encoded referral channel (Website, Social, etc.)
-      age_*                   — one-hot encoded age group (18-29, 30-49, etc.)
-    """
-    g = transactions.groupby("donor_id")
-
-    summary = g.agg(
-        donation_count =("donation_id",    "count"),
-        total_donated  =("donation_amount", "sum"),
-        avg_donation   =("donation_amount", "mean"),
-        last_donation  =("donation_date",   "max"),
-        first_donation =("donation_date",   "min"),
-    ).reset_index()
-
-    summary["recency_days"]            = (ref_date - summary["last_donation"]).dt.days
-    summary["months_since_last"]       = summary["recency_days"] / 30.44
-    summary["days_since_first"]        = (ref_date - summary["first_donation"]).dt.days
-    summary["amount_log"]              = np.log1p(summary["total_donated"])
-    summary["avg_donation_log"]        = np.log1p(summary["avg_donation"])
-    active_days                         = summary["days_since_first"].replace(0, 1)
-    summary["giving_frequency_ratio"]  = summary["donation_count"] / active_days
-    summary["stage_score"]             = np.log1p(summary["donation_count"])
-    summary["first_gift_missing_flag"] = summary["first_donation"].isna().astype(int)
-    summary["never_donated_flag"]      = 0
-
-    # Lifetime gift flag
-    lifetime = transactions.groupby("donor_id").agg(
-        gift_100_lifetime=("donation_amount", lambda x: int((x >= 100).any())),
-    ).reset_index()
-    summary = summary.merge(lifetime, on="donor_id", how="left")
-
-    # Newsletter opt-in (most recent value per donor)
-    if "newsletter_opt_in" in transactions.columns:
-        nl = (transactions.sort_values("donation_date")
-              .groupby("donor_id")["newsletter_opt_in"].last().reset_index())
-        nl["newsletter_opt_in"] = nl["newsletter_opt_in"].astype(int)
-        summary = summary.merge(nl, on="donor_id", how="left")
-        summary["newsletter_opt_in"] = summary["newsletter_opt_in"].fillna(0).astype(int)
-
-    # Referral channel → one-hot
-    if "referral_channel" in transactions.columns:
-        ref = transactions.groupby("donor_id")["referral_channel"].agg(
-            lambda x: x.value_counts().index[0]
-        ).reset_index()
-        dummies = pd.get_dummies(ref["referral_channel"], prefix="ref").astype(int)
-        ref = pd.concat([ref[["donor_id"]], dummies], axis=1)
-        summary = summary.merge(ref, on="donor_id", how="left")
-        for c in [col for col in summary.columns if col.startswith("ref_")]:
-            summary[c] = summary[c].fillna(0).astype(int)
-
-    # Age group → one-hot
-    if "age_group" in transactions.columns:
-        age = transactions.groupby("donor_id")["age_group"].agg(
-            lambda x: x.value_counts().index[0]
-        ).reset_index()
-        dummies = pd.get_dummies(age["age_group"], prefix="age").astype(int)
-        age = pd.concat([age[["donor_id"]], dummies], axis=1)
-        summary = summary.merge(age, on="donor_id", how="left")
-        for c in [col for col in summary.columns if col.startswith("age_")]:
-            summary[c] = summary[c].fillna(0).astype(int)
-
-    return summary
-
-
-donor_summary = build_donor_features(train_df, cutoff_date)
-
-# ── Cached feature engineering wrapper ───────────────────────────────────────
-# Defined after build_donor_features so it can call it.
-# Cached by data hash — reruns only when the underlying CSV changes.
-@st.cache_data(show_spinner="Building features...", ttl=3600)
-def cached_build_features(data_hash: str, train_json: str, cutoff_str: str,
-                           future_donor_ids: list) -> pd.DataFrame:
-    train  = pd.read_json(io.StringIO(train_json))
-    train["donation_date"] = pd.to_datetime(train["donation_date"], unit="ms")
-    cutoff = pd.Timestamp(cutoff_str)
-    summary = build_donor_features(train, cutoff)
-    summary["donated_again"] = summary["donor_id"].isin(future_donor_ids).astype(int)
-    return summary
-
-
-_data_hash    = df_hash(df)
-donor_summary = cached_build_features(
-    data_hash       = _data_hash,
-    train_json      = train_df.to_json(),
-    cutoff_str      = str(cutoff_date),
-    future_donor_ids = list(future_df["donor_id"].unique()),
-)
-
-# Disk path for pre-saved model — avoids retraining on cold starts
-MODEL_DISK_PATH = PROJECT_ROOT / "outputs" / "donor_model.joblib"
-
-# ── Model features ────────────────────────────────────────────────────────────
-BASE_FEATURES = [
-    "recency_days", "donation_count", "amount_log", "avg_donation_log",
-    "months_since_last", "days_since_first", "giving_frequency_ratio",
-    "gift_100_lifetime", "first_gift_missing_flag", "never_donated_flag",
-    "newsletter_opt_in", "stage_score",
-]
-EXTRA_FEATURES = [c for c in donor_summary.columns
-                  if c.startswith("ref_") or c.startswith("age_")]
-MODEL_FEATURES = [f for f in BASE_FEATURES + EXTRA_FEATURES if f in donor_summary.columns]
-
-X = donor_summary[MODEL_FEATURES].fillna(0)
-y = donor_summary["donated_again"]
-
-# Time-based split for lift chart and permutation importance
-# Proper donor-level time-based split
-donor_summary_sorted = donor_summary.sort_values("last_donation")
-
-split_idx = int(len(donor_summary_sorted) * 0.8)
-
-train_ids = set(donor_summary_sorted.iloc[:split_idx]["donor_id"])
-test_ids  = set(donor_summary_sorted.iloc[split_idx:]["donor_id"])
-
-train_mask = donor_summary["donor_id"].isin(train_ids)
-test_mask  = donor_summary["donor_id"].isin(test_ids)
-
-X_train, X_test = X[train_mask], X[test_mask]
-y_train, y_test = y[train_mask], y[test_mask]
-
-# fallback if needed
-used_fallback = False
-if len(X_test) < 50 or y_test.nunique() < 2 or y_test.sum() == 0:
-    X_train, X_test = X, X
-    y_train, y_test = y, y
-    used_fallback = True
-
-
-# ── Model training — cached + joblib session persistence ─────────────────────
-# ── Model training — cached + joblib session persistence ─────────────────────
-@st.cache_data(show_spinner="Training model...", ttl=3600)
-def train_and_evaluate(data_hash: str, feature_cols: list,
-                        X_json: str, y_json: str,
-                        X_train_json: str, y_train_json: str,
-                        X_test_json: str,  y_test_json: str,
-                        disk_model_path: str = ""):
-    """
-    Train RandomForest, compute cross-validated AUC, PR-AUC, and Recall@K.
-    Loads from disk if a pre-trained model exists for the same data hash —
-    reduces cold start from ~20s to ~1s.
-    """
-    import os
-
-    X_all = pd.read_json(io.StringIO(X_json))
-    y_all = pd.read_json(io.StringIO(y_json), typ="series")
-    X_tr  = pd.read_json(io.StringIO(X_train_json))
-    y_tr  = pd.read_json(io.StringIO(y_train_json), typ="series")
-    X_te  = pd.read_json(io.StringIO(X_test_json))
-    y_te  = pd.read_json(io.StringIO(y_test_json), typ="series")
-
-    # ── Try loading from disk first ───────────────────────────────────────────
-    disk      = Path(disk_model_path) if disk_model_path else None
-    hash_file = disk.with_suffix(".hash") if disk else None
-
-    if (disk and disk.exists() and hash_file.exists()
-            and hash_file.read_text().strip() == data_hash):
-        rf     = joblib.load(disk)
-        p_test = rf.predict_proba(X_te)[:, 1]
-        roc_auc = float(cross_val_score(
-            rf, X_all, y_all,
-            cv=StratifiedKFold(n_splits=5, shuffle=True, random_state=42),
-            scoring="roc_auc", n_jobs=-1,
-        ).mean())
-    else:
-        # ── Full training ─────────────────────────────────────────────────────
-        n_est = 200 if os.getenv("STREAMLIT_SHARING_MODE") else 500
-
-        rf = RandomForestClassifier(
-            n_estimators=n_est,
-            min_samples_leaf=5,
-            max_features="sqrt",
-            class_weight="balanced_subsample",
-            random_state=42,
-            n_jobs=-1,
-        )
-
-        cv      = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-        cv_aucs = cross_val_score(rf, X_all, y_all, cv=cv, scoring="roc_auc", n_jobs=-1)
-        roc_auc = float(cv_aucs.mean())
-        rf.fit(X_tr, y_tr)
-        p_test  = rf.predict_proba(X_te)[:, 1]
-
-        # Save to disk for future cold starts
-        if disk:
-            try:
-                disk.parent.mkdir(parents=True, exist_ok=True)
-                joblib.dump(rf, disk)
-                hash_file.write_text(data_hash)
-            except Exception:
-                pass
-
-    pr_auc = float(average_precision_score(y_te, p_test))
-
-    def recall_at_k(y_true, y_score, k):
-        idx = np.argsort(-y_score)[:max(1, int(len(y_true) * k))]
-        return float(y_true.iloc[idx].sum() / max(1, y_true.sum()))
-
-    r10 = recall_at_k(y_te, p_test, 0.10)
-    r20 = recall_at_k(y_te, p_test, 0.20)
-
-    scores        = rf.predict_proba(X_all)[:, 1]
-    q80, q60, q40 = np.quantile(scores, [0.80, 0.60, 0.40])
-
-    def _tier(s):
-        if s >= q80:   return "High"
-        elif s >= q60: return "Medium"
-        elif s >= q40: return "Low"
-        else:          return "Very Low"
-
-    segments = [_tier(s) for s in scores]
-
-    buf = io.BytesIO()
-    joblib.dump(rf, buf)
-    model_bytes = buf.getvalue()
-
-    return model_bytes, roc_auc, pr_auc, r10, r20, scores.tolist(), segments
-
-model_bytes, roc_auc, pr_auc, recall_top10, recall_top20, _scores, _segments = train_and_evaluate(
-    data_hash       = _data_hash,
-    feature_cols    = MODEL_FEATURES,
-    X_json          = X.to_json(),
-    y_json          = y.to_json(),
-    X_train_json    = X_train.to_json(),
-    y_train_json    = y_train.to_json(),
-    X_test_json     = X_test.to_json(),
-    y_test_json     = y_test.to_json(),
-    disk_model_path = str(MODEL_DISK_PATH),
-)
-
-# Deserialise model from bytes for permutation importance
-rf = joblib.load(io.BytesIO(model_bytes))
 
 # Use pre-computed scores and segments from cache
 donor_summary["propensity_score"] = _scores
@@ -700,31 +463,8 @@ st.markdown('<p class="section-header">What Drives the Model?</p>', unsafe_allow
 st.caption("Permutation importance — how much model performance drops when each feature is shuffled.")
 
 
-@st.cache_data(show_spinner="Computing feature importance...", ttl=3600)
-def cached_permutation_importance(data_hash: str, model_hash: str,
-                                   X_test_json: str, y_test_json: str) -> pd.DataFrame:
-    """Cached permutation importance — reruns only when data or model changes."""
-    X_te = pd.read_json(io.StringIO(X_test_json))
-    y_te = pd.read_json(io.StringIO(y_test_json), typ="series")
-    _rf  = joblib.load(io.BytesIO(bytes.fromhex(model_hash)))
-    perm = permutation_importance(
-        _rf, X_te, y_te,
-        n_repeats=3,          # reduced from 5 — ~40% faster, negligible accuracy loss
-        random_state=42,
-        scoring="average_precision",
-    )
-    return pd.DataFrame({
-        "feature":    X_te.columns,
-        "importance": perm.importances_mean,
-    }).sort_values("importance", ascending=False).head(15).reset_index(drop=True)
+# imp_df loaded from pre-trained artifact
 
-
-imp_df = cached_permutation_importance(
-    data_hash   = _data_hash,
-    model_hash  = model_bytes.hex(),
-    X_test_json = X_test.to_json(),
-    y_test_json = y_test.to_json(),
-)
 
 imp_chart = (
     alt.Chart(imp_df)

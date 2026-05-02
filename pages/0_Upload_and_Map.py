@@ -100,6 +100,26 @@ FIELD_HINTS = {
 }
 
 
+def render_footer():
+    st.markdown(
+        """
+    ---
+    <div style="
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 0.85rem;
+        color: #888;
+        padding-top: 0.5rem;
+    ">
+        <div>Built by Stann-Omar Jones</div>
+        <div>Donor Propensity Dashboard · v1.0</div>
+    </div>
+    """,
+        unsafe_allow_html=True,
+    )
+
+
 def best_guess(field: str, columns: list[str]) -> str:
     """Return the best matching column name for a required field, or empty string."""
     hints = FIELD_HINTS.get(field, [])
@@ -239,6 +259,7 @@ if uploaded_file is None:
     else:
         st.info("Upload a CSV file to get started.")
     if "raw_df" not in st.session_state:
+        render_footer()
         st.stop()
 else:
     raw_df = pd.read_csv(uploaded_file)
@@ -331,6 +352,7 @@ for i, (field, (ok, msg)) in enumerate(validation.items()):
 
 if not all_ok:
     st.warning("Fix the errors above before proceeding.")
+    render_footer()
     st.stop()
 
 st.divider()
@@ -372,22 +394,3 @@ if st.button("✅ Confirm and go to Donor Propensity →", type="primary"):
     st.session_state["mapped_df"] = transformed
     st.session_state["mapping_done"] = True
     st.switch_page("pages/1_Donor_Propensity.py")
-
-# ── Footer ────────────────────────────────────────────────────────────────────
-st.markdown(
-    """
----
-<div style="
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    font-size: 0.85rem;
-    color: #888;
-    padding-top: 0.5rem;
-">
-    <div>Built by Stann-Omar Jones</div>
-    <div>Donor Propensity Dashboard · v1.0</div>
-</div>
-""",
-    unsafe_allow_html=True,
-)

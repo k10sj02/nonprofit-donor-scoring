@@ -6,7 +6,8 @@ st.set_page_config(
     layout="wide",
 )
 
-st.markdown("""
+st.markdown(
+    """
     <style>
     .block-container { padding-top: 4rem; }
     .hero { text-align: center; padding: 2rem 0 1rem 0; }
@@ -14,21 +15,27 @@ st.markdown("""
     .hero p { font-size: 1.1rem; color: #666; max-width: 600px; margin: 0 auto; }
     .feature-box { background: #f8f9fa; border-radius: 12px; padding: 1.75rem; }
     </style>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
-st.markdown("""
+st.markdown(
+    """
 <div class="hero">
     <div style="font-size:3rem">💚</div>
     <h1>Donor Intelligence Suite</h1>
     <p>Score, prioritize, and maximize donor value using behavioral data and predictive modeling.</p>
 </div>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
 st.divider()
 
 _, col, _ = st.columns([1, 2, 1])
 with col:
-    st.markdown("""
+    st.markdown(
+        """
     <div class="feature-box">
         <h3>🧠 Donor Propensity & Value Scoring</h3>
         <p>Identify who to contact now and who to invest in long-term using predictive scoring and value modeling.</p>
@@ -41,16 +48,24 @@ with col:
             <li>Model lift vs random selection</li>
         </ul>
     </div>
-    """, unsafe_allow_html=True)
+    """,
+        unsafe_allow_html=True,
+    )
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    st.caption("Balances short-term fundraising opportunities with long-term donor value.")
+    st.caption(
+        "Balances short-term fundraising opportunities with long-term donor value."
+    )
 
-    st.page_link("pages/1_Donor_Propensity.py", label="Open Donor Propensity →", icon="🧠")
+    st.page_link(
+        "pages/1_Donor_Propensity.py", label="Open Donor Propensity →", icon="🧠"
+    )
 
 st.divider()
 
 _, mid, _ = st.columns([1, 2, 1])
 with mid:
-    st.caption("Built with Streamlit · Upload your own donation CSV to get started.")
+    st.caption(
+        "Built by Stann-Omar Jones · Upload your own donation CSV to get started."
+    )

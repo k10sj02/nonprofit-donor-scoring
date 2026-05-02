@@ -44,27 +44,59 @@ st.markdown(
 
 # ── Required fields and their descriptions ────────────────────────────────────
 REQUIRED_FIELDS = {
-    "donor_id":        "Unique identifier per donor (e.g. DonorID, donor_id, ContactID)",
-    "donation_id":     "Unique identifier per transaction (e.g. GiftID, transaction_id)",
-    "donation_date":   "Date of the donation (e.g. GiftDate, donation_date, Date)",
+    "donor_id": "Unique identifier per donor (e.g. DonorID, donor_id, ContactID)",
+    "donation_id": "Unique identifier per transaction (e.g. GiftID, transaction_id)",
+    "donation_date": "Date of the donation (e.g. GiftDate, donation_date, Date)",
     "donation_amount": "Numeric gift amount (e.g. Amount, GiftAmount, donation_amount)",
 }
 
 OPTIONAL_FIELDS = {
-    "donation_type":  "Type of gift e.g. One-time, Recurring (optional)",
-    "campaign":       "Campaign or fund name (optional)",
+    "donation_type": "Type of gift e.g. One-time, Recurring (optional)",
+    "campaign": "Campaign or fund name (optional)",
     "payment_method": "Payment method e.g. Credit Card, Check (optional)",
 }
 
 # ── Fuzzy column matcher ──────────────────────────────────────────────────────
 FIELD_HINTS = {
-    "donor_id":        ["donor_id", "donorid", "donor", "contactid", "contact_id", "id", "constituent_id"],
-    "donation_id":     ["donation_id", "donationid", "gift_id", "giftid", "transaction_id", "transactionid", "record_id"],
-    "donation_date":   ["donation_date", "donationdate", "gift_date", "giftdate", "date", "transaction_date", "close_date"],
-    "donation_amount": ["donation_amount", "amount", "gift_amount", "giftamount", "value", "gift_value", "total"],
-    "donation_type":   ["donation_type", "gift_type", "type", "giving_type"],
-    "campaign":        ["campaign", "fund", "appeal", "designation"],
-    "payment_method":  ["payment_method", "paymentmethod", "payment_type", "method"],
+    "donor_id": [
+        "donor_id",
+        "donorid",
+        "donor",
+        "contactid",
+        "contact_id",
+        "id",
+        "constituent_id",
+    ],
+    "donation_id": [
+        "donation_id",
+        "donationid",
+        "gift_id",
+        "giftid",
+        "transaction_id",
+        "transactionid",
+        "record_id",
+    ],
+    "donation_date": [
+        "donation_date",
+        "donationdate",
+        "gift_date",
+        "giftdate",
+        "date",
+        "transaction_date",
+        "close_date",
+    ],
+    "donation_amount": [
+        "donation_amount",
+        "amount",
+        "gift_amount",
+        "giftamount",
+        "value",
+        "gift_value",
+        "total",
+    ],
+    "donation_type": ["donation_type", "gift_type", "type", "giving_type"],
+    "campaign": ["campaign", "fund", "appeal", "designation"],
+    "payment_method": ["payment_method", "paymentmethod", "payment_type", "method"],
 }
 
 
@@ -96,19 +128,34 @@ def validate_mapping(df: pd.DataFrame, mapping: dict) -> dict:
             parsed = pd.to_datetime(series, errors="coerce")
             n_failed = parsed.isna().sum()
             if n_failed == len(series):
-                results[field] = (False, f"Could not parse any dates in '{col}'. Check the format.")
+                results[field] = (
+                    False,
+                    f"Could not parse any dates in '{col}'. Check the format.",
+                )
             elif n_failed > 0:
-                results[field] = (True, f"⚠️ {n_failed:,} rows could not be parsed as dates and will be dropped.")
+                results[field] = (
+                    True,
+                    f"⚠️ {n_failed:,} rows could not be parsed as dates and will be dropped.",
+                )
             else:
-                results[field] = (True, f"✅ All {len(series):,} dates parsed successfully.")
+                results[field] = (
+                    True,
+                    f"✅ All {len(series):,} dates parsed successfully.",
+                )
 
         elif field == "donation_amount":
             numeric = pd.to_numeric(series, errors="coerce")
             n_failed = numeric.isna().sum()
             if n_failed == len(series):
-                results[field] = (False, f"Could not parse any numeric values in '{col}'.")
+                results[field] = (
+                    False,
+                    f"Could not parse any numeric values in '{col}'.",
+                )
             elif n_failed > 0:
-                results[field] = (True, f"⚠️ {n_failed:,} rows could not be parsed as numbers and will be dropped.")
+                results[field] = (
+                    True,
+                    f"⚠️ {n_failed:,} rows could not be parsed as numbers and will be dropped.",
+                )
             else:
                 results[field] = (True, f"✅ All {len(series):,} values are numeric.")
 
@@ -148,7 +195,9 @@ def apply_mapping(df: pd.DataFrame, mapping: dict) -> pd.DataFrame:
 
 # ── Page header ───────────────────────────────────────────────────────────────
 st.title("📂 Upload & Map Your Data")
-st.caption("Upload your donation CSV, map your columns to the required fields, and proceed to analysis.")
+st.caption(
+    "Upload your donation CSV, map your columns to the required fields, and proceed to analysis."
+)
 st.divider()
 
 with st.expander("📋 What format does my CSV need to be in?", expanded=False):
@@ -169,7 +218,9 @@ with st.expander("📋 What format does my CSV need to be in?", expanded=False):
     """)
 
 # ── Step 1: Upload ────────────────────────────────────────────────────────────
-st.markdown('<p class="section-header">Step 1 — Upload your CSV</p>', unsafe_allow_html=True)
+st.markdown(
+    '<p class="section-header">Step 1 — Upload your CSV</p>', unsafe_allow_html=True
+)
 
 uploaded_file = st.file_uploader("", type="csv", label_visibility="collapsed")
 
@@ -178,7 +229,9 @@ if uploaded_file is None:
     PROJECT_ROOT = Path(__file__).parent.parent
     default_path = PROJECT_ROOT / "outputs" / "donations_clean.csv"
     if default_path.exists():
-        st.info("No file uploaded — you can use the default sample dataset below, or upload your own.")
+        st.info(
+            "No file uploaded — you can use the default sample dataset below, or upload your own."
+        )
         if st.button("Use default sample dataset"):
             raw_df = pd.read_csv(default_path)
             st.session_state["raw_df"] = raw_df
@@ -201,12 +254,14 @@ st.dataframe(raw_df.head(5), use_container_width=True, hide_index=True)
 st.divider()
 
 # ── Step 2: Map columns ───────────────────────────────────────────────────────
-st.markdown('<p class="section-header">Step 2 — Map your columns</p>', unsafe_allow_html=True)
+st.markdown(
+    '<p class="section-header">Step 2 — Map your columns</p>', unsafe_allow_html=True
+)
 st.caption("We've made our best guess at the mapping. Correct any that look wrong.")
 
-columns      = raw_df.columns.tolist()
-none_option  = "(not mapped)"
-col_options  = [none_option] + columns
+columns = raw_df.columns.tolist()
+none_option = "(not mapped)"
+col_options = [none_option] + columns
 
 mapping = {}
 
@@ -215,9 +270,12 @@ req_col1, req_col2 = st.columns(2)
 field_items = list(REQUIRED_FIELDS.items())
 for i, (field, desc) in enumerate(field_items):
     guess = best_guess(field, columns)
-    col   = req_col1 if i % 2 == 0 else req_col2
+    col = req_col1 if i % 2 == 0 else req_col2
     with col:
-        st.markdown(f'<p class="field-label">{"⭐ " + field.replace("_", " ").title()}</p>', unsafe_allow_html=True)
+        st.markdown(
+            f'<p class="field-label">{"⭐ " + field.replace("_", " ").title()}</p>',
+            unsafe_allow_html=True,
+        )
         st.caption(desc)
         default_idx = col_options.index(guess) if guess in col_options else 0
         mapping[field] = st.selectbox(
@@ -235,7 +293,10 @@ opt_cols_ui = [opt_col1, opt_col2, opt_col3]
 for i, (field, desc) in enumerate(OPTIONAL_FIELDS.items()):
     guess = best_guess(field, columns)
     with opt_cols_ui[i % 3]:
-        st.markdown(f'<p class="field-label">{field.replace("_", " ").title()}</p>', unsafe_allow_html=True)
+        st.markdown(
+            f'<p class="field-label">{field.replace("_", " ").title()}</p>',
+            unsafe_allow_html=True,
+        )
         st.caption(desc)
         default_idx = col_options.index(guess) if guess in col_options else 0
         mapping[field] = st.selectbox(
@@ -275,16 +336,21 @@ if not all_ok:
 st.divider()
 
 # ── Step 4: Preview transformed data ─────────────────────────────────────────
-st.markdown('<p class="section-header">Step 4 — Preview transformed data</p>', unsafe_allow_html=True)
+st.markdown(
+    '<p class="section-header">Step 4 — Preview transformed data</p>',
+    unsafe_allow_html=True,
+)
 
 transformed = apply_mapping(raw_df, mapping)
 
 c1, c2, c3 = st.columns(3)
 c1.metric("Rows after transformation", f"{len(transformed):,}")
 c2.metric("Donors", f"{transformed['donor_id'].nunique():,}")
-c3.metric("Date range",
-          f"{transformed['donation_date'].min().strftime('%Y-%m-%d')} → "
-          f"{transformed['donation_date'].max().strftime('%Y-%m-%d')}")
+c3.metric(
+    "Date range",
+    f"{transformed['donation_date'].min().strftime('%Y-%m-%d')} → "
+    f"{transformed['donation_date'].max().strftime('%Y-%m-%d')}",
+)
 
 st.dataframe(transformed.head(10), use_container_width=True, hide_index=True)
 
@@ -295,10 +361,33 @@ if n_dropped > 0:
 st.divider()
 
 # ── Step 5: Confirm and proceed ───────────────────────────────────────────────
-st.markdown('<p class="section-header">Step 5 — Confirm and analyze</p>', unsafe_allow_html=True)
-st.caption("This will save your mapped data and make it available to the Donor Propensity dashboard.")
+st.markdown(
+    '<p class="section-header">Step 5 — Confirm and analyze</p>', unsafe_allow_html=True
+)
+st.caption(
+    "This will save your mapped data and make it available to the Donor Propensity dashboard."
+)
 
 if st.button("✅ Confirm and go to Donor Propensity →", type="primary"):
-    st.session_state["mapped_df"]      = transformed
-    st.session_state["mapping_done"]   = True
+    st.session_state["mapped_df"] = transformed
+    st.session_state["mapping_done"] = True
     st.switch_page("pages/1_Donor_Propensity.py")
+
+# ── Footer ────────────────────────────────────────────────────────────────────
+st.markdown(
+    """
+---
+<div style="
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.85rem;
+    color: #888;
+    padding-top: 0.5rem;
+">
+    <div>Built by Stann-Omar Jones</div>
+    <div>Donor Propensity Dashboard · v1.0</div>
+</div>
+""",
+    unsafe_allow_html=True,
+)
